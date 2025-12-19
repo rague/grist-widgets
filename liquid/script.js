@@ -1,7 +1,6 @@
 let options = null;
 let data = null;
 let src = "";
-let checksum = null;
 let template = undefined;
 const engine = new liquidjs.Liquid();
 let cache;
@@ -27,12 +26,10 @@ grist.onRecord(async record => {
     const fields = await cache.getFields(tableId);
     const colId = fields.find(t => t.id == options.templateColumnId).colId;
     const newSrc = record[colId]?.tableId ? await getRefTemplate(record[colId].tableId, record[colId].rowId, options.templateRefColumnId) : record[colId];
-    const newChecksum = newSrc.split("\n")?.[0]?.match(/<!-- checksum:([\s\S])*? -->/g);
     data = new RecordDrop(record);
 
 
-    if (newChecksum?.[1] && newChecksum[1] !== checksum || src !== newSrc) {
-        checksum = newChecksum?.[1];
+    if (src !== newSrc) {
         src = newSrc;
         try {
             template = { ok: engine.parse(src) };

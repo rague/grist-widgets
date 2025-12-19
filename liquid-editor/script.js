@@ -23,7 +23,7 @@
         }
 
         currentRecord = record;
-        editor.session.setValue(stripChecksum(record[colMapping.code]));
+        editor.session.setValue(record[colMapping.code]);
     });
 
     function buildEditor() {
@@ -54,9 +54,6 @@
             return;
         }
         lastWrite = editor.getValue();
-        let checksum = toHex(new Uint8Array(await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(lastWrite))));
-        lastWrite = `<!-- checksum:${checksum} -->\n` + lastWrite;
-        idx++;
         if (lastWrite === currentRecord[colMapping.code]) {
             return;
         }
@@ -69,8 +66,6 @@
 
 })();
 
-let idx = 1
-
 function debounce(func, timeout = 300) {
     let timer;
     return (...args) => {
@@ -78,11 +73,3 @@ function debounce(func, timeout = 300) {
         timer = setTimeout(() => { func.apply(this, args); }, timeout);
     };
 }
-
-function stripChecksum(str) {
-    return str.replace(/<!-- checksum:[\s\S]*? -->\n/g, "");
-}
-
-function toHex(toEncode) {
-    return [...toEncode].map(byte => byte.toString(16).padStart(2, "0")).join("");
-};
