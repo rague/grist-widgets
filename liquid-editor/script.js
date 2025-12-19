@@ -11,6 +11,18 @@
         ]
     });
 
+    grist.onNewRecord(() => {
+        if (!editor) {
+            buildEditor();
+        }
+
+        currentRecord = null;
+        editor.setOptions({ readOnly: true });
+        editor.session.off('change', commitChangesDebounced);
+        editor.session.setValue("");
+        editor.session.on('change', commitChangesDebounced);
+    });
+
     grist.onRecord(async (record, mapping) => {
         if (!mapping) return;
         if (!editor) {
@@ -20,10 +32,14 @@
         if (record.id === currentRecord?.id && record[colMapping.code] === lastWrite) {
             currentRecord = record;
             return;
+
         }
 
         currentRecord = record;
+        editor.setOptions({ readOnly: false });
+        editor.session.off('change', commitChangesDebounced);
         editor.session.setValue(record[colMapping.code]);
+        editor.session.on('change', commitChangesDebounced);
     });
 
     function buildEditor() {
@@ -39,9 +55,6 @@
             highlightIndentGuides: true,
             tabSize: 2,
             keyboardHandler: "ace/keyboard/vscode"
-        });
-        editor.session.on('change', function () {
-            commitChangesDebounced();
         });
     }
 
@@ -60,10 +73,7 @@
         await grist.getTable().update({ id: currentRecord.id, fields: { [colMapping.code]: lastWrite } });
     }
 
-    const commitChangesDebounced = debounce(commitChanges, 300);
-
-
-
+    const commitChangesDebounced = () => debounce(commitChanges, 500)();
 })();
 
 function debounce(func, timeout = 300) {
