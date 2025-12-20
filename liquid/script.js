@@ -1,23 +1,28 @@
-let options = null;
-let data = null;
-let src = "";
-let template = undefined;
-const engine = new liquidjs.Liquid();
-let cache;
+// Script for a Grist widget using Liquid templating
+// This script handles the display of Liquid templates based on Grist data
+
+let options = null; // Widget configuration options
+let data = null; // Current record data
+let src = ""; // Liquid template source
+let template = undefined; // Compiled template or error
+const engine = new liquidjs.Liquid(); // Liquid engine
+let cache; // Cache for tables and fields
 
 
+// Initialize Grist with necessary callbacks
 grist.ready({
     onEditOptions: openConfig,
     requiredAccess: 'full', // requires full access to read table data
 });
 
 
+// Callback for multiple record updates (not used here)
 grist.onRecords((records, mappings) => {
 
 });
 
 
-// Placeholder for reacting to a single record update.
+// Callback for single record update
 grist.onRecord(async record => {
     if (options?.templateColumnId === undefined) {
         return;
@@ -43,6 +48,7 @@ grist.onRecord(async record => {
 }, { includeColumns: "normal", expandRefs: false });
 
 
+// Callback for options update
 grist.onOptions(async opts => {
     options = opts || {};
     if (options.templateColumnId === undefined) {
@@ -53,14 +59,7 @@ grist.onOptions(async opts => {
     }
 })
 
-async function getRefTemplate(tableId, rowId, templateRefColumnId) {
-    const fields = await cache.getFields(tableId);
-    const colId = fields.find(t => t.id === templateRefColumnId).colId;
-    const table = await cache.getTable(tableId, true);
-    const src = table.find(r => r.id === rowId)[colId];
-    return src;
-}
-
+// Function to render the template in the HTML container
 async function render() {
     // Rendering logic goes here
     const container = document.getElementById("container");
@@ -70,6 +69,8 @@ async function render() {
             : "<p>Waiting for data or template</p>");
 }
 
+
+// Function to open the widget configuration
 async function openConfig(opts) {
     colId = opts ? opts.colId : options?.templateColumnId;
 
@@ -94,11 +95,12 @@ async function openConfig(opts) {
 }
 
 
-
+// Function called when selecting a template column
 function selectTemplateColumn() {
     openConfig({ colId: parseInt(document.getElementById("template-col-id").value) });
 }
 
+// Function to validate and apply template options
 function validateTemplate() {
     const templateColumnId = parseInt(document.getElementById("template-col-id").value);
     let templateRefColumnId = document.getElementById("template-ref-col-id")?.value;
@@ -118,7 +120,18 @@ function validateTemplate() {
     render();
 }
 
+// Function to retrieve template from a reference
+async function getRefTemplate(tableId, rowId, templateRefColumnId) {
+    const fields = await cache.getFields(tableId);
+    const colId = fields.find(t => t.id === templateRefColumnId).colId;
+    const table = await cache.getTable(tableId, true);
+    const src = table.find(r => r.id === rowId)[colId];
+    return src;
+}
 
+
+
+// Class to cache Grist tables and fields
 class CachedTables {
     #tables = null;
     #types = {};
@@ -127,6 +140,7 @@ class CachedTables {
     constructor() {
     }
 
+    // Retrieves the list of tables
     async getTables() {
         if (this.#tables)
             return this.#tables;
@@ -135,6 +149,7 @@ class CachedTables {
     }
 
 
+    // Retrieves fields of a table
     async getFields(tableId) {
         if (this.#types[tableId])
             return this.#types[tableId];
@@ -154,6 +169,7 @@ class CachedTables {
         return this.#types[tableId];
     }
 
+    // Retrieves data of a table
     async getTable(tableId) {
         if (this.#tablesData[tableId])
             return this.#tablesData[tableId];
@@ -170,6 +186,7 @@ class CachedTables {
     }
 }
 
+// Utility function to parse JSON safely
 function safeParse(value) {
     try {
         return JSON.parse(value);
@@ -178,6 +195,7 @@ function safeParse(value) {
     }
 }
 
+// Class to represent a record as a Liquid Drop object
 class RecordDrop extends liquidjs.Drop {
     #record;
     #refs = {};
@@ -185,11 +203,13 @@ class RecordDrop extends liquidjs.Drop {
         super();
         this.#record = record;
 
+        // Defines dynamic properties for each field
         for (const key of Object.keys(record).filter(k => !k.startsWith("gristHelper_"))) {
             let field = fields?.find(f => f.colId === key);
             let type = field?.type?.split(":")[0];
             switch (type) {
                 case "Ref":
+                    // lookup for referenced record, lazily loaded
                     Object.defineProperty(this, key, {
                         get: async function () {
                             if (this.#refs[key]) {
