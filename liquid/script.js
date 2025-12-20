@@ -261,7 +261,7 @@ class RecordDrop extends liquidjs.Drop {
 
                 case "Date":
                     if (Array.isArray(record[key]) && record[key][0] === "d") {
-                        this[key] = new Date(record[key][1]);
+                        this[key] = new Date(record[key][1] * 1000);
                     } else {
                         this[key] = record[key];
                     }
@@ -269,7 +269,7 @@ class RecordDrop extends liquidjs.Drop {
 
                 case "DateTime":
                     if (Array.isArray(record[key]) && record[key][0] === "D") {
-                        this[key] = new Date(record[key][1]);
+                        this[key] = new Date(record[key][1] * 1000);
                     } else {
                         this[key] = record[key];
                     }
