@@ -259,6 +259,22 @@ class RecordDrop extends liquidjs.Drop {
 
                     break;
 
+                case "Date":
+                    if (Array.isArray(record[key]) && record[key][0] === "d") {
+                        this[key] = new Date(record[key][1]);
+                    } else {
+                        this[key] = record[key];
+                    }
+                    break;
+
+                case "DateTime":
+                    if (Array.isArray(record[key]) && record[key][0] === "D") {
+                        this[key] = new Date(record[key][1]);
+                    } else {
+                        this[key] = record[key];
+                    }
+                    break;
+
                 case "Attachments":
                     if (Array.isArray(record[key])) {
                         this[key] = record[key]?.slice(1).map(id => {
