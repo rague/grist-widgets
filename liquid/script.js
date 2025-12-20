@@ -16,18 +16,19 @@ grist.onRecords((records, mappings) => {
 
 });
 
+
 // Placeholder for reacting to a single record update.
 grist.onRecord(async record => {
     if (options?.templateColumnId === undefined) {
         return;
     }
     cache = new CachedTables();
+    const tokenInfo = await grist.docApi.getAccessToken({ readOnly: true });
     const tableId = await grist.selectedTable.getTableId();
     const fields = await cache.getFields(tableId);
     const colId = fields.find(t => t.id == options.templateColumnId).colId;
     const newSrc = record[colId]?.tableId ? await getRefTemplate(record[colId].tableId, record[colId].rowId, options.templateRefColumnId) : record[colId];
-    data = new RecordDrop(record);
-
+    data = new RecordDrop(record, fields, tokenInfo);
 
     if (src !== newSrc) {
         src = newSrc;
@@ -150,7 +151,6 @@ class CachedTables {
             t.widgetOptions = safeParse(t.widgetOptions);
             return t;
         }).filter(col => col.type !== "ManualSortPos" && !col.colId.startsWith("gristHelper_"));
-        console.log("COLUMNS TYPES:", this.#types[tableId]);
         return this.#types[tableId];
     }
 
@@ -181,35 +181,48 @@ function safeParse(value) {
 class RecordDrop extends liquidjs.Drop {
     #record;
     #refs = {};
-    constructor(record) {
+    constructor(record, fields, tokenInfo) {
         super();
         this.#record = record;
+
         for (const key of Object.keys(record).filter(k => !k.startsWith("gristHelper_"))) {
-            if (record[key]?.constructor?.name !== "Reference") {
-                this[key] = record[key];
-            } else {
-                Object.defineProperty(this, key, {
-                    get: async function () {
-                        if (this.#refs[key]) {
+            let field = fields?.find(f => f.colId === key);
+            let type = field?.type?.split(":")[0];
+            switch (type) {
+                case "Ref":
+                    Object.defineProperty(this, key, {
+                        get: async function () {
+                            if (this.#refs[key]) {
+                                return this.#refs[key];
+                            }
+                            const ref = this.#record[key];
+
+                            if (ref?.constructor?.name !== "Reference") {
+                                return "# ERROR_NOT_A_REFERENCE #";
+                            }
+
+                            const table = await cache.getTable(ref.tableId);
+                            const row = table.find(r => r.id === ref.rowId);
+                            if (!row) {
+                                return null;
+                            }
+
+                            this.#refs[key] = new RecordDrop(row, fields, tokenInfo);
                             return this.#refs[key];
-                        }
-                        const ref = this.#record[key];
+                        },
 
-                        if (ref?.constructor?.name !== "Reference") {
-                            return "# ERROR_NOT_A_REFERENCE #";
-                        }
+                    });
+                    break
 
-                        const table = await cache.getTable(ref.tableId);
-                        const row = table.find(r => r.id === ref.rowId);
-                        if (!row) {
-                            return null;
-                        }
+                case "Attachments":
+                    this[key] = record[key].slice(1).map(id => {
+                        return `${tokenInfo.baseUrl}/attachments/${id}/download?auth=${tokenInfo.token}`;
+                    });
+                    break
 
-                        this.#refs[key] = new RecordDrop(row);
-                        return this.#refs[key];
-                    },
-
-                });
+                default:
+                    this[key] = record[key];
+                    break
             }
         }
     }
