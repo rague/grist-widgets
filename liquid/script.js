@@ -168,13 +168,13 @@ class CachedTables {
             return t;
         }).filter(col => col.type !== "ManualSortPos" && !col.colId.startsWith("gristHelper_"));
         return this.#types[tableId];
+
     }
 
     // Retrieves data of a table
     async getTable(tableId) {
         if (this.#tablesData[tableId])
             return this.#tablesData[tableId];
-
 
         const table = await grist.docApi.fetchTable(tableId);
         const fields = Object.keys(table);
@@ -198,11 +198,9 @@ function safeParse(value) {
 
 // Class to represent a record as a Liquid Drop object
 class RecordDrop extends liquidjs.Drop {
-    #record;
-    #refs = {};
     constructor(record, fields, tokenInfo) {
         super();
-        this.#record = record;
+        const refs = {}
 
         // Defines dynamic properties for each field
         for (const key of Object.keys(record).filter(k => !k.startsWith("gristHelper_"))) {
@@ -210,30 +208,54 @@ class RecordDrop extends liquidjs.Drop {
             let type = field?.type?.split(":")[0];
             switch (type) {
                 case "Ref":
-                    // lookup for referenced record, lazily loaded
+                    // lookup for reference record, lazily loaded
                     Object.defineProperty(this, key, {
                         get: async function () {
-                            if (this.#refs[key]) {
-                                return this.#refs[key];
+                            if (key in refs) {
+                                return refs[key];
                             }
-                            const ref = this.#record[key];
 
-                            if (ref?.constructor?.name !== "Reference") {
+                            if (record[key]?.constructor?.name !== "Reference") {
                                 return "# ERROR_NOT_A_REFERENCE #";
                             }
 
-                            const table = await cache.getTable(ref.tableId);
-                            const row = table.find(r => r.id === ref.rowId);
+                            const table = await cache.getTable(record[key].tableId);
+                            const row = table.find(r => r.id === record[key].rowId);
                             if (!row) {
                                 return null;
                             }
 
-                            this.#refs[key] = new RecordDrop(row, fields, tokenInfo);
-                            return this.#refs[key];
+                            refs[key] = new RecordDrop(row, fields, tokenInfo);
+                            return refs[key];
                         },
 
                     });
-                    break
+                    break;
+
+                case "RefList":
+                    const tableId = field?.type?.split(":")[1];
+
+                    Object.defineProperty(this, key, {
+                        get: async function () {
+                            if (key in refs) {
+                                return refs[key];
+                            }
+                            const table = await cache.getTable(tableId);
+
+                            refs[key] = record[key]?.map(rowId => {
+                                let row = table.find(r => r.id === rowId);
+                                if (row) {
+                                    return new RecordDrop(row, fields, tokenInfo);
+                                } else {
+                                    return null;
+                                }
+                            });
+                            return refs[key];
+                        },
+
+                    });
+
+                    break;
 
                 case "Attachments":
                     this[key] = record[key]?.slice(1).map(id => {
