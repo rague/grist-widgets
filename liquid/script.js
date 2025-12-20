@@ -26,7 +26,6 @@ grist.onRecords((records, mappings) => {
 // Callback for single record update
 grist.onRecord(async rec => {
     record = rec;
-
     if (options.templateColumnId === undefined) {
         cache = new CachedTables();
         await openConfig();
@@ -34,7 +33,7 @@ grist.onRecord(async rec => {
         await render();
     }
 
-}, { includeColumns: "normal", expandRefs: false });
+}, { includeColumns: "normal", expandRefs: false, keepEncoded: true });
 
 
 // Callback for options update
@@ -61,8 +60,6 @@ async function render() {
             template = { error: e.toString() };
         }
     }
-
-
 
     const container = document.getElementById("container");
     container.innerHTML = template?.ok
@@ -184,7 +181,6 @@ class CachedTables {
             let row = Object.fromEntries(fields.map(f => [f, table[f][i]]));
             return row;
         });
-
         return this.#tablesData[tableId];
     }
 }
@@ -217,12 +213,12 @@ class RecordDrop extends liquidjs.Drop {
                                 return refs[key];
                             }
 
-                            if (record[key]?.constructor?.name !== "Reference") {
+                            if (record[key]?.[0] !== "R") {
                                 return "# ERROR_NOT_A_REFERENCE #";
                             }
 
-                            const table = await cache.getTable(record[key].tableId);
-                            const row = table.find(r => r.id === record[key].rowId);
+                            const table = await cache.getTable(record[key][1]);
+                            const row = table.find(r => r.id === record[key][2]);
                             if (!row) {
                                 return null;
                             }
@@ -244,14 +240,18 @@ class RecordDrop extends liquidjs.Drop {
                             }
                             const table = await cache.getTable(tableId);
 
-                            refs[key] = record[key]?.map(rowId => {
-                                let row = table.find(r => r.id === rowId);
-                                if (row) {
-                                    return new RecordDrop(row, fields, tokenInfo);
-                                } else {
-                                    return null;
-                                }
-                            });
+                            if (Array.isArray(record[key])) {
+                                refs[key] = record[key]?.slice(1)?.map(rowId => {
+                                    let row = table.find(r => r.id === rowId);
+                                    if (row) {
+                                        return new RecordDrop(row, fields, tokenInfo);
+                                    } else {
+                                        return null;
+                                    }
+                                });
+                            } else {
+                                refs[key] = record[key];
+                            }
                             return refs[key];
                         },
 
@@ -260,9 +260,13 @@ class RecordDrop extends liquidjs.Drop {
                     break;
 
                 case "Attachments":
-                    this[key] = record[key]?.slice(1).map(id => {
-                        return `${tokenInfo.baseUrl}/attachments/${id}/download?auth=${tokenInfo.token}`;
-                    });
+                    if (Array.isArray(record[key])) {
+                        this[key] = record[key]?.slice(1).map(id => {
+                            return `${tokenInfo.baseUrl}/attachments/${id}/download?auth=${tokenInfo.token}`;
+                        });
+                    } else {
+                        this[key] = record[key];
+                    }
                     break
 
                 default:
