@@ -2,6 +2,7 @@
 // This script handles the display of Liquid templates based on Grist data
 
 let options = null; // Widget configuration options
+let record = null; // Received record
 let data = null; // Current record data
 let src = ""; // Liquid template source
 let template = undefined; // Compiled template or error
@@ -23,10 +24,26 @@ grist.onRecords((records, mappings) => {
 
 
 // Callback for single record update
-grist.onRecord(async record => {
-    if (options?.templateColumnId === undefined) {
-        return;
+grist.onRecord(async rec => {
+    record = rec;
+
+    if (options.templateColumnId === undefined) {
+        cache = new CachedTables();
+        await openConfig();
+    } else {
+        await render();
     }
+
+}, { includeColumns: "normal", expandRefs: false });
+
+
+// Callback for options update
+grist.onOptions(async opts => {
+    options = opts || {};
+})
+
+// Function to render the template in the HTML container
+async function render() {
     cache = new CachedTables();
     const tokenInfo = await grist.docApi.getAccessToken({ readOnly: true });
     const tableId = await grist.selectedTable.getTableId();
@@ -44,24 +61,8 @@ grist.onRecord(async record => {
         }
     }
 
-    await render();
-}, { includeColumns: "normal", expandRefs: false });
 
 
-// Callback for options update
-grist.onOptions(async opts => {
-    options = opts || {};
-    if (options.templateColumnId === undefined) {
-        new CachedTables();
-        await openConfig();
-    } else {
-        await render();
-    }
-})
-
-// Function to render the template in the HTML container
-async function render() {
-    // Rendering logic goes here
     const container = document.getElementById("container");
     container.innerHTML = template?.ok
         ? await engine.render(template.ok, data)
@@ -235,7 +236,7 @@ class RecordDrop extends liquidjs.Drop {
                     break
 
                 case "Attachments":
-                    this[key] = record[key].slice(1).map(id => {
+                    this[key] = record[key]?.slice(1).map(id => {
                         return `${tokenInfo.baseUrl}/attachments/${id}/download?auth=${tokenInfo.token}`;
                     });
                     break
