@@ -44,6 +44,7 @@ grist.onOptions(async opts => {
 
 // Function to render the template in the HTML container
 async function render() {
+    document.getElementById("print").style.display = "block";
     cache = new CachedTables();
     const tokenInfo = await grist.docApi.getAccessToken({ readOnly: true });
     const tableId = await grist.selectedTable.getTableId();
@@ -74,6 +75,7 @@ async function render() {
 // Function to open the widget configuration
 async function openConfig(opts) {
     colId = opts ? opts.colId : options?.templateColumnId;
+    document.getElementById("print").style.display = "none";
 
     const tableId = await grist.selectedTable.getTableId();
     const fields = await cache.getFields(tableId);
@@ -82,7 +84,7 @@ async function openConfig(opts) {
     const fieldRef = field?.type.startsWith("Ref") ? field.type.slice(4) : null;
     const refFields = fieldRef ? await cache.getFields(fieldRef) : null;
 
-    container.innerHTML = `<div class="options">` +
+    container.innerHTML = `<div style="padding: 8px;"` +
         `<p>Please select the template column</p><select id="template-col-id" onchange="selectTemplateColumn()"><option value=""></option>` +
         fields.filter(f => f.type === "Text" || f.type.startsWith("Ref:")).map(col => `<option value="${col.id}" ${col.id === colId ? "selected" : ""}>${col.label}</option>`).join("<br/>") +
         `</select>` +
