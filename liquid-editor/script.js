@@ -82,7 +82,7 @@
     }
 
     // Debounced version of commitChanges
-    const commitChangesDebounced = () => debounce(commitChanges, 500)();
+    const commitChangesDebounced = debounce(commitChanges, 500);
 })();
 
 // Utility function for debouncing
