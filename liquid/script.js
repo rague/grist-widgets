@@ -42,6 +42,12 @@ grist.onRecord(async rec => {
 // Callback for options update
 grist.onOptions(async opts => {
     options = opts || {};
+    if (options.templateColumnId === undefined) {
+        cache = new CachedTables();
+        await openConfig();
+    } else {
+        await render();
+    }
 })
 
 // Function to render the template in the HTML container
@@ -52,7 +58,9 @@ async function render() {
     const tableId = await grist.selectedTable.getTableId();
     const fields = await cache.getFields(tableId);
     const colId = fields.find(t => t.id == options.templateColumnId).colId;
-    const newSrc = record[colId]?.tableId ? await getRefTemplate(record[colId].tableId, record[colId].rowId, options.templateRefColumnId) : record[colId];
+    const newSrc = Array.isArray(record[colId]) && record[colId][0] === "R"
+        ? await getRefTemplate(record[colId][1], record[colId][2], options.templateRefColumnId)
+        : record[colId];
     data = new RecordDrop(record, fields, tokenInfo);
 
     if (src !== newSrc) {
@@ -94,7 +102,7 @@ async function openConfig(opts) {
             `</select>`
             : "") +
         `<p><button onclick="openConfig()">Revert</button> ` +
-        `<button onclick="validateTemplate()">Ok</button></p></div>`;
+        `<button onclick="validateTemplate(${refFields ? true : false})">Ok</button></p></div>`;
 }
 
 
@@ -104,12 +112,12 @@ function selectTemplateColumn() {
 }
 
 // Function to validate and apply template options
-function validateTemplate() {
+function validateTemplate(isRef) {
     const templateColumnId = parseInt(document.getElementById("template-col-id").value);
     let templateRefColumnId = document.getElementById("template-ref-col-id")?.value;
     templateRefColumnId = templateRefColumnId ? parseInt(templateRefColumnId) : null;
 
-    if (!templateColumnId) {
+    if (!templateColumnId || (isRef && !templateRefColumnId)) {
         alert("Please select a column.");
         return;
     }
