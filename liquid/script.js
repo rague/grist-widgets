@@ -6,8 +6,11 @@ let record = null; // Received record
 let data = null; // Current record data
 let src = ""; // Liquid template source
 let template = undefined; // Compiled template or error
-const engine = new liquidjs.Liquid(); // Liquid engine
 let cache; // Cache for tables and fields
+const engine = new liquidjs.Liquid({
+    outputEscape: "escape",
+    jsTruthy: true,
+}); // Liquid engine
 
 
 // Initialize Grist with necessary callbacks
