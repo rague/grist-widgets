@@ -4,10 +4,11 @@
 let options = null; // Widget configuration options
 let record = null; // Received record
 let records = null; // Received records
-let data = null; // Current record data
 let src = ""; // Liquid template source
+let previousHtml = ""; // Previous rendered html
 let template = undefined; // Compiled template or error
 let cache; // Cache for tables and fields
+let refreshTimer; // Timer for refresh at regular interval
 const engine = new liquidjs.Liquid({
     outputEscape: "escape",
     jsTruthy: true,
@@ -74,7 +75,7 @@ async function render() {
         : (Array.isArray(record[colId]) && record[colId][0] === "R"
             ? await getRefTemplate(record[colId][1], record[colId][2], options.templateRefColumnId)
             : record[colId]);
-    data = new RecordDrop(multiple ? { records } : record, fields, tokenInfo);
+    const data = new RecordDrop(multiple ? { records } : record, fields, tokenInfo);
 
     if (src !== newSrc) {
         src = newSrc;
@@ -86,15 +87,26 @@ async function render() {
     }
 
     const container = document.getElementById("container");
-    container.innerHTML = template?.ok
+    const html = template?.ok
         ? await engine.render(template.ok, data)
         : (template?.error ? `<p style="color:red;">Template Error: ${template.error}</p>`
             : "<p>Waiting for data or template</p>");
+
+    if (html !== previousHtml) {
+        container.innerHTML = html;
+    }
+
+    previousHtml = html;
+
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(render, 3000);
 }
 
 
 // Function to open the widget configuration
 async function openConfig(opts) {
+    clearTimeout(refreshTimer);
+    previousHtml = "";
     let colId = opts ? opts.colId : options?.templateColumnId;
     let labelId = opts ? opts.labelId : options?.templateLabelColumnId;
     document.getElementById("print").style.display = "none";
@@ -166,8 +178,6 @@ async function openConfig(opts) {
         `<button id="config-ok" ${cond ? "" : "disabled"}>Ok</button></p></div>`;
     container.innerHTML = out;
     document.getElementById("config-ok").onclick = () => validateTemplate(cond);
-
-
 }
 
 
@@ -391,7 +401,8 @@ class RecordDrop extends liquidjs.Drop {
                 case "Attachments":
                     if (Array.isArray(record[key])) {
                         this[key] = record[key]?.slice(1).map(id => {
-                            return `${tokenInfo.baseUrl}/attachments/${id}/download?auth=${tokenInfo.token}`;
+                            // return `${tokenInfo.baseUrl}/attachments/${id}/download?auth=${tokenInfo.token}`;
+                            return `${tokenInfo.baseUrl}/attachments/${id}/download`;
                         });
                     } else {
                         this[key] = record[key];
