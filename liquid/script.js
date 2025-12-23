@@ -13,6 +13,7 @@ const engine = new liquidjs.Liquid({
     outputEscape: "escape",
     jsTruthy: true,
 }); // Liquid engine
+let multiple = false;
 
 
 // Initialize Grist with necessary callbacks
@@ -21,37 +22,39 @@ grist.ready({
     requiredAccess: 'full', // requires full access to read table data
 });
 
-if (multiple) {
-    // Callback for multiple record updates
-    grist.onRecords(async (recs, mappings) => {
-        records = recs;
-        record = null;
+
+// Callback for multiple record updates
+grist.onRecords(async (recs, mappings) => {
+    records = recs;
+    if (multiple) {
         if (options.templateTableId === undefined) {
             cache = new CachedTables();
             await openConfig();
         } else {
             await render();
         }
-    }, { includeColumns: "normal", expandRefs: false, keepEncoded: true });
-} else {
+    }
+}, { includeColumns: "normal", expandRefs: false, keepEncoded: true });
 
-    // Callback for single record update
-    grist.onRecord(async rec => {
-        record = rec;
-        records = null;
+
+// Callback for single record update
+grist.onRecord(async rec => {
+    record = rec;
+    if (!multiple) {
         if (options.templateColumnId === undefined) {
             cache = new CachedTables();
             await openConfig();
         } else {
             await render();
         }
+    }
+}, { includeColumns: "normal", expandRefs: false, keepEncoded: true });
 
-    }, { includeColumns: "normal", expandRefs: false, keepEncoded: true });
 
-}
 // Callback for options update
 grist.onOptions(async opts => {
     options = opts || {};
+    multiple = options.multiple;
     if (!multiple && options.templateColumnId === undefined
         || multiple && options.templateTableId === undefined
     ) {
@@ -111,60 +114,71 @@ async function openConfig(opts) {
     let labelId = opts ? opts.labelId : options?.templateLabelColumnId;
     document.getElementById("print").style.display = "none";
     const container = document.getElementById("container");
+    const multipleConfig = opts && "multiple" in opts ? opts.multiple : multiple;
 
 
-    const tableId = multiple
+    const tableId = multipleConfig
         ? opts?.tid || options.templateTableId
         : await grist.selectedTable.getTableId();
 
-    const tables = multiple ? await cache.getTables() : null;
+    const tables = multipleConfig ? await cache.getTables() : null;
 
-    let out = `<div style="padding: 8px;">`;
+    let out = `<div style="padding: 8px;"><fieldset><legend>Mode :</legend>
+  <div>
+    <input type="radio" id="single" name="mode" value="single" onclick="setMultiple(false)" ${multipleConfig ? "" : "checked"} />
+    <label for="single">Single record</label>
+
+    <input type="radio" id="multiple" name="mode" value="multiple" onclick="setMultiple(true)" ${multipleConfig ? "checked" : ""}/>
+    <label for="multiple">Record list</label>
+  </div>
+</fieldset><fieldset><legend>Template</legend>`;
     let cond = null;
 
-    if (multiple) {
-        out += `<p>Please select the templates table</p><p><select id="template-table-id" onchange="selectTemplatesTable()"><option value=""></option>` +
+    if (multipleConfig) {
+        out += `<p>Table: <select id="template-table-id" onchange="selectTemplatesTable()"><option value=""></option>` +
             Object.values(tables).map(table => `<option value="${table.id}" ${table.id === tableId ? "selected" : ""}>${table.tableId}</option>`).join("<br/>") +
             `</select></p>`;
     }
 
 
-    if (!multiple || tableId) {
-        const fields = await cache.getFields(multiple ? tables[tableId].tableId : tableId);
+    if (!multipleConfig || tableId) {
+        const fields = await cache.getFields(multipleConfig ? tables[tableId].tableId : tableId);
         const field = colId ? fields.find(t => t.id === colId) : undefined;
-        let detail = "";
 
-        if (multiple) {
-            detail = ` and label column <select id="template-label-id" onchange="selectLabelColumn(${tableId}, ${colId})"><option value=""></option>` +
+
+
+        out += `<p>Column: <select id="template-col-id" onchange="selectTemplateColumn(${multipleConfig}, ${multipleConfig ? tableId : null})"><option value=""></option>` +
+            fields.filter(f => f.type === "Text" || (multipleConfig ? false : f.type.startsWith("Ref:"))).map(col => `<option value="${col.id}" ${col.id === colId ? "selected" : ""}>${col.label}</option>`).join("<br/>") +
+            `</select><p>`;
+
+        if (multipleConfig) {
+            out += `<p>Label: <select id="template-label-id" onchange="selectLabelColumn(${tableId}, ${colId})"><option value=""></option>` +
                 fields.filter(f => f.type === "Text" && f.id !== colId).map(col => `<option value="${col.id}" ${col.id === labelId ? "selected" : ""}>${col.label}</option>`).join("<br/>") +
-                `</select>`
+                `</select><p>`
         } else {
             const fieldRef = field?.type.startsWith("Ref") ? field.type.slice(4) : null;
             const refFields = fieldRef ? await cache.getFields(fieldRef) : null;
-            detail = (refFields ?
-                ` <select id="template-ref-col-id"><option value=""></option>` +
+            out += (refFields ?
+                `<p>Code: <select id="template-ref-col-id"><option value=""></option>` +
                 refFields.filter(f => f.type === "Text").map(col => `<option value="${col.id}" ${col.id === options?.templateRefColumnId ? "selected" : ""}>${col.label}</option>`).join("<br/>") +
-                `</select>`
+                `</select><p>`
                 : "")
             cond = {
+                multiple: multipleConfig,
                 templateTableId: tableId,
                 templateColumnId: colId,
                 isRef: refFields ? true : false
             }
         }
 
-        out += `<p>Please select the template column</p><p><select id="template-col-id" onchange="selectTemplateColumn(${multiple ? tableId : null})"><option value=""></option>` +
-            fields.filter(f => f.type === "Text" || (multiple ? false : f.type.startsWith("Ref:"))).map(col => `<option value="${col.id}" ${col.id === colId ? "selected" : ""}>${col.label}</option>`).join("<br/>") +
-            `</select>` +
-            detail + '</p>';
-
-        if (multiple && colId && labelId) {
+        if (multipleConfig && colId && labelId) {
             const records = await cache.getTable(tables[tableId].tableId);
             const field = fields.find(f => f.id === labelId).colId;
-            out += `<p>Please select the template</p><p><select id="template-id" onchange=""><option value=""></option>` +
+            out += `<p>Template: <select id="template-id" onchange=""><option value=""></option>` +
                 records.map(rec => `<option value="${rec.id}" ${rec.id === options?.templateId ? "selected" : ""}>${rec[field]}</option>`).join("<br/>") +
                 `</select></p>`;
             cond = {
+                multiple: multipleConfig,
                 templateTableId: tableId,
                 templateColumnId: colId,
                 templateLabelColumnId: labelId
@@ -174,29 +188,32 @@ async function openConfig(opts) {
 
     }
 
-    out += `<p><button onclick="openConfig()">Revert</button> ` +
+    out += `</fieldset><p><button onclick="openConfig()">Revert</button> ` +
         `<button id="config-ok" ${cond ? "" : "disabled"}>Ok</button></p></div>`;
     container.innerHTML = out;
     document.getElementById("config-ok").onclick = () => validateTemplate(cond);
 }
 
+function setMultiple(bool) {
+    openConfig({ multiple: bool });
+}
 
 // Function called when selecting a template column
 function selectTemplatesTable() {
-    openConfig({ tid: parseInt(document.getElementById("template-table-id").value) });
+    openConfig({ multiple: true, tid: parseInt(document.getElementById("template-table-id").value) });
 }
 // Function called when selecting a template column
-function selectTemplateColumn(tid) {
-    openConfig({ tid, colId: parseInt(document.getElementById("template-col-id").value) });
+function selectTemplateColumn(multiple, tid) {
+    openConfig({ multiple, tid, colId: parseInt(document.getElementById("template-col-id").value) });
 }
 // Function called when selecting a label column
 function selectLabelColumn(tid, colId) {
-    openConfig({ tid, colId, labelId: parseInt(document.getElementById("template-label-id").value) });
+    openConfig({ multiple: true, tid, colId, labelId: parseInt(document.getElementById("template-label-id").value) });
 }
 
 // Function to validate and apply template options
 function validateTemplate(opts) {
-    if (multiple) {
+    if (opts.multiple) {
         const templateId = parseInt(document.getElementById("template-id")?.value);
         if (!templateId) {
             alert("Please select a template.");
@@ -207,11 +224,14 @@ function validateTemplate(opts) {
             || options.templateLabelColumnId !== opts.templateLabelColumnId
             || options.templateId !== templateId) {
             grist.setOptions({
+                multiple: true,
                 templateTableId: opts.templateTableId,
                 templateColumnId: opts.templateColumnId,
                 templateLabelColumnId: opts.templateLabelColumnId,
                 templateId: templateId
             });
+            return;
+
         }
     } else {
         const templateRefColumnId = opts.isRef ? parseInt(document.getElementById("template-ref-col-id")?.value) : null;
@@ -221,12 +241,13 @@ function validateTemplate(opts) {
         }
         if (options.templateColumnId !== opts.templateColumnId || options.templateRefColumnId !== templateRefColumnId) {
             grist.setOptions({
+                multiple: false,
                 templateColumnId: opts.templateColumnId,
                 templateRefColumnId: templateRefColumnId
             });
+            return;
         }
     }
-
 
     render();
 }
