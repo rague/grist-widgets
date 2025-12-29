@@ -9,6 +9,7 @@ let previousHtml = ""; // Previous rendered html
 let template = undefined; // Compiled template or error
 let cache; // Cache for tables and fields
 let refreshTimer; // Timer for refresh at regular interval
+let tokenInfo; // Access token
 const engine = new liquidjs.Liquid({
     outputEscape: "escape",
     jsTruthy: true,
@@ -69,7 +70,8 @@ grist.onOptions(async opts => {
 async function render() {
     document.getElementById("print").style.display = "block";
     cache = new CachedTables();
-    const tokenInfo = await grist.docApi.getAccessToken({ readOnly: true });
+    tokenInfo = tokenInfo || await grist.docApi.getAccessToken({ readOnly: true });
+
     const tableId = await grist.selectedTable.getTableId();
     const fields = await cache.getFields(tableId);
     const colId = multiple ? null : fields.find(t => t.id == options.templateColumnId).colId;
@@ -422,8 +424,7 @@ class RecordDrop extends liquidjs.Drop {
                 case "Attachments":
                     if (Array.isArray(record[key])) {
                         this[key] = record[key]?.slice(1).map(id => {
-                            // return `${tokenInfo.baseUrl}/attachments/${id}/download?auth=${tokenInfo.token}`;
-                            return `${tokenInfo.baseUrl}/attachments/${id}/download`;
+                            return `${tokenInfo.baseUrl}/attachments/${id}/download?auth=${tokenInfo.token}`;
                         });
                     } else {
                         this[key] = record[key];
