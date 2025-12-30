@@ -35,7 +35,7 @@ grist.onRecords(async (recs, mappings) => {
             await render();
         }
     }
-}, { includeColumns: "normal", expandRefs: false, keepEncoded: true });
+}, { includeColumns: "all", expandRefs: false, keepEncoded: true });
 
 
 // Callback for single record update
@@ -80,7 +80,9 @@ async function render() {
         : (Array.isArray(record[colId]) && record[colId][0] === "R"
             ? await getRefTemplate(record[colId][1], record[colId][2], options.templateRefColumnId)
             : record[colId]);
-    const data = new RecordDrop(multiple ? { records } : record, fields, tokenInfo);
+    const data = multiple
+        ? new RecordDrop({ records: records.map(rec => new RecordDrop(rec, fields, tokenInfo)) }, fields, tokenInfo)
+        : new RecordDrop(record, fields, tokenInfo);
 
     if (src !== newSrc) {
         src = newSrc;
@@ -304,9 +306,8 @@ class CachedTables {
             let t = Object.fromEntries(fields.map(f => [f, columns[f][index]]));
             t.widgetOptions = safeParse(t.widgetOptions);
             return t;
-        }).filter(col => col.type !== "ManualSortPos" && !col.colId.startsWith("gristHelper_"));
+        });
         return this.#types[tableId];
-
     }
 
     // Retrieves data of a table
@@ -340,14 +341,33 @@ function safeParse(value) {
     }
 }
 
+
 // Class to represent a record as a Liquid Drop object
 class RecordDrop extends liquidjs.Drop {
     constructor(record, fields, tokenInfo) {
         super();
 
+        if (fields) {
+            this._ = Object.fromEntries(fields.map(f => {
+                const opts = f.widgetOptions;
+                if (opts) {
+                    opts.styles = stylesFromOptions(opts);
+                    opts.headerStyles = headerStylesFromOptions(opts);
+                }
+                return [f.colId, opts]
+            }));
+        } else {
+            this._ = {};
+        }
+
+
         for (const key of Object.keys(record).filter(k => !k.startsWith("gristHelper_"))) {
             let field = fields?.find(f => f.colId === key);
             let type = field?.type?.split(":")[0];
+            let rules;
+            if (field) {
+                rules = field.rules?.slice(1).map(cid => fields.find(f => f.id === cid)).map(f => record[f.colId]);
+            }
             switch (type) {
                 case "RefList":
                     // lookup for references list, lazily loaded
@@ -373,14 +393,18 @@ class RecordDrop extends liquidjs.Drop {
 
                 case "ChoiceList":
                     if (Array.isArray(record[key])) {
-                        this[key] = record[key]?.slice(1);
+                        this[key] = record[key]?.slice(1).map(c => new ValueDrop(c, field?.widgetOptions?.choiceOptions[c]), rules);
                     } else {
                         this[key] = record[key];
                     }
                     break;
 
+                case "Choice":
+                    this[key] = new ValueDrop(record[key], field?.widgetOptions?.choiceOptions[record[key]], rules);
+                    break;
+
                 default:
-                    any(this, key, record[key], tokenInfo)
+                    any(this, key, record[key], tokenInfo, field?.widgetOptions, rules)
             }
         }
     }
@@ -397,7 +421,48 @@ class DictDrop extends liquidjs.Drop {
     }
 }
 
-function any(o, key, data, tokenInfo) {
+
+class ValueDrop extends liquidjs.Drop {
+    constructor(value, options, rules) {
+        super();
+        this.value = value;
+        this._ = { ...options };
+
+        if (options) {
+            this._.styles = stylesFromOptions(options);
+            this._.headerStyles = headerStylesFromOptions(options);
+            if (rules) {
+                this._.conditionalStyles = options.rulesOptions?.filter((_, idx) => rules[idx]).map(ropt => stylesFromOptions(ropt)).join();
+            }
+        }
+    }
+    valueOf() {
+        return this.value;
+    }
+
+}
+
+function stylesFromOptions(options) {
+    return (options.alignment ? `text-align: ${options.alignment};` : "") +
+        (options.textColor ? `color: ${options.textColor};` : "") +
+        (options.fillColor ? `background-color: ${options.fillColor};` : "") +
+        (options.fontBold ? `font-weight: bold;` : "") +
+        (options.fontUnderline ? `text-decoration: underline;` : "") +
+        (options.fontItalic ? `font-style: italic;` : "") +
+        (options.fontStrikethrough ? `text-decoration-line: line-through;` : "")
+}
+
+function headerStylesFromOptions(options) {
+    return (options.headerAlignment ? `text-align: ${options.headerAlignment};` : "") +
+        (options.headerTextColor ? `color: ${options.headerTextColor};` : "") +
+        (options.headerFillColor ? `background-color: ${options.headerFillColor};` : "") +
+        (options.headerFontBold ? `font-weight: bold;` : "") +
+        (options.headerFontUnderline ? `text-decoration: underline;` : "") +
+        (options.headerFontItalic ? `font-style: italic;` : "") +
+        (options.headerFontStrikethrough ? `text-decoration-line: line-through;` : "")
+}
+
+function any(o, key, data, tokenInfo, options, rules) {
     if (Array.isArray(data)) {
         switch (data[0]) {
             case 'L':
@@ -427,7 +492,7 @@ function any(o, key, data, tokenInfo) {
         }
 
     } else {
-        o[key] = data;
+        o[key] = new ValueDrop(data, options, rules);
     }
 }
 
