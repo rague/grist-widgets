@@ -344,78 +344,18 @@ function safeParse(value) {
 class RecordDrop extends liquidjs.Drop {
     constructor(record, fields, tokenInfo) {
         super();
-        const refs = {}
 
-        // Defines dynamic properties for each field
         for (const key of Object.keys(record).filter(k => !k.startsWith("gristHelper_"))) {
             let field = fields?.find(f => f.colId === key);
             let type = field?.type?.split(":")[0];
             switch (type) {
-                case "Ref":
-                    // lookup for reference record, lazily loaded
-                    Object.defineProperty(this, key, {
-                        get: async function () {
-                            if (key in refs) {
-                                return refs[key];
-                            }
-
-                            if (record[key]?.[0] !== "R") {
-                                return "# ERROR_NOT_A_REFERENCE #";
-                            }
-
-                            const table = await cache.getTable(record[key][1]);
-                            const row = table.find(r => r.id === record[key][2]);
-                            if (!row) {
-                                return null;
-                            }
-
-                            refs[key] = new RecordDrop(row, fields, tokenInfo);
-                            return refs[key];
-                        },
-
-                    });
-                    break;
-
                 case "RefList":
-                    const tableId = field?.type?.split(":")[1];
-
-                    Object.defineProperty(this, key, {
-                        get: async function () {
-                            if (key in refs) {
-                                return refs[key];
-                            }
-                            const table = await cache.getTable(tableId);
-
-                            if (Array.isArray(record[key])) {
-                                refs[key] = record[key]?.slice(1)?.map(rowId => {
-                                    let row = table.find(r => r.id === rowId);
-                                    if (row) {
-                                        return new RecordDrop(row, fields, tokenInfo);
-                                    } else {
-                                        return null;
-                                    }
-                                });
-                            } else {
-                                refs[key] = record[key];
-                            }
-                            return refs[key];
-                        },
-
-                    });
-
-                    break;
-
-                case "Date":
-                    if (Array.isArray(record[key]) && record[key][0] === "d") {
-                        this[key] = new Date(record[key][1] * 1000);
-                    } else {
-                        this[key] = record[key];
-                    }
-                    break;
-
-                case "DateTime":
-                    if (Array.isArray(record[key]) && record[key][0] === "D") {
-                        this[key] = new Date(record[key][1] * 1000);
+                    // lookup for references list, lazily loaded
+                    if (Array.isArray(record[key]) && record[key][0] == "L") {
+                        const tableId = field?.type?.split(":")[1];
+                        Object.defineProperty(this, key, {
+                            get: refListGetter(tableId, record[key]?.slice(1), tokenInfo)
+                        });
                     } else {
                         this[key] = record[key];
                     }
@@ -429,12 +369,105 @@ class RecordDrop extends liquidjs.Drop {
                     } else {
                         this[key] = record[key];
                     }
-                    break
+                    break;
+
+                case "ChoiceList":
+                    if (Array.isArray(record[key])) {
+                        this[key] = record[key]?.slice(1);
+                    } else {
+                        this[key] = record[key];
+                    }
+                    break;
 
                 default:
-                    this[key] = record[key];
-                    break
+                    any(this, key, record[key], tokenInfo)
             }
         }
+    }
+}
+
+// Class to represent a dict as a Liquid Drop object
+class DictDrop extends liquidjs.Drop {
+    constructor(dict, tokenInfo) {
+        super();
+        // Defines dynamic properties for each field
+        for (const key of Object.keys(dict).filter(k => !k.startsWith("gristHelper_"))) {
+            any(this, key, dict[key], tokenInfo);
+        }
+    }
+}
+
+function any(o, key, data, tokenInfo) {
+    if (Array.isArray(data)) {
+        switch (data[0]) {
+            case 'L':
+                o[key] = data?.slice(1);
+                break;
+            case 'O':
+                o[key] = new DictDrop(data[1], tokenInfo);
+                break;
+            case 'D':
+                o[key] = new Date(data[1] * 1000);
+                break;
+            case 'd':
+                o[key] = new Date(data[1] * 1000);
+                break;
+            case 'R':
+                Object.defineProperty(o, key, {
+                    get: refGetter(data[1], data[2])
+                });
+                break;
+            case 'r':
+                Object.defineProperty(o, key, {
+                    get: refListGetter(data[1], data[2], tokenInfo)
+                });
+                break;
+            default:
+                o[key] = data;
+        }
+
+    } else {
+        o[key] = data;
+    }
+}
+
+function refGetter(tableId, rowId) {
+    let ref;
+    return async function () {
+        if (ref) {
+            ref;
+        }
+
+        const table = await cache.getTable(tableId);
+        const fields = await cache.getFields(tableId);
+        const row = table.find(r => r.id === rowId);
+        if (!row) {
+            return null;
+        }
+
+        ref = new RecordDrop(row, fields, tokenInfo);
+        return ref;
+    };
+}
+
+function refListGetter(tableId, ids, tokenInfo) {
+    let refList;
+    return async function () {
+        if (refList) {
+            return refList;
+        }
+        const table = await cache.getTable(tableId);
+        const fields = await cache.getFields(tableId);
+
+        refList = ids.map(rowId => {
+            let row = table.find(r => r.id === rowId);
+            if (row) {
+                return new RecordDrop(row, fields, tokenInfo);
+            } else {
+                return null;
+            }
+        });
+
+        return refList;
     }
 }
