@@ -1,0 +1,3 @@
+[submodule "grist-varamil"]
+	path = varamil
+	url = https://github.com/rague/grist-varamil.git
