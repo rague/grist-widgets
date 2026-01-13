@@ -393,14 +393,14 @@ class RecordDrop extends liquidjs.Drop {
 
                 case "ChoiceList":
                     if (Array.isArray(record[key])) {
-                        this[key] = record[key]?.slice(1).map(c => new ValueDrop(c, field?.widgetOptions?.choiceOptions[c]), rules);
+                        this[key] = record[key]?.slice(1).map(c => new ValueDrop(c, field?.widgetOptions?.choiceOptions?.[c]), rules);
                     } else {
                         this[key] = record[key];
                     }
                     break;
 
                 case "Choice":
-                    this[key] = new ValueDrop(record[key], field?.widgetOptions?.choiceOptions[record[key]], rules);
+                    this[key] = new ValueDrop(record[key], field?.widgetOptions?.choiceOptions?.[record[key]], rules);
                     break;
 
                 default:
