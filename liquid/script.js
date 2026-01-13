@@ -360,7 +360,6 @@ class RecordDrop extends liquidjs.Drop {
             this._ = {};
         }
 
-
         for (const key of Object.keys(record).filter(k => !k.startsWith("gristHelper_"))) {
             let field = fields?.find(f => f.colId === key);
             let type = field?.type?.split(":")[0];
@@ -369,12 +368,34 @@ class RecordDrop extends liquidjs.Drop {
                 rules = field.rules?.slice(1).map(cid => fields.find(f => f.id === cid)).map(f => record[f.colId]);
             }
             switch (type) {
+                case "Ref":
+                    // lookup for reference , lazily loaded
+                    if (Array.isArray(record[key]) && record[key][0] == "R") {
+                        const tableId = field?.type?.split(":")[1];
+                        Object.defineProperty(this, key, {
+                            get: refGetter(tableId, record[key]?.slice(1), tokenInfo)
+                        });
+                    } else if (typeof record[key] === "number") {
+                        const tableId = field?.type?.split(":")[1];
+                        Object.defineProperty(this, key, {
+                            get: refGetter(tableId, record[key], tokenInfo)
+                        });
+                    } else {
+                        this[key] = record[key];
+                    }
+                    break;
+
                 case "RefList":
                     // lookup for references list, lazily loaded
                     if (Array.isArray(record[key]) && record[key][0] == "L") {
                         const tableId = field?.type?.split(":")[1];
                         Object.defineProperty(this, key, {
                             get: refListGetter(tableId, record[key]?.slice(1), tokenInfo)
+                        });
+                    } else if (typeof record[key] === "number") {
+                        const tableId = field?.type?.split(":")[1];
+                        Object.defineProperty(this, key, {
+                            get: refListGetter(tableId, record[key], tokenInfo)
                         });
                     } else {
                         this[key] = record[key];
