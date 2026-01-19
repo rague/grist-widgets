@@ -371,10 +371,12 @@ class RecordDrop extends liquidjs.Drop {
                 case "Ref":
                     // lookup for reference , lazily loaded
                     if (Array.isArray(record[key]) && record[key][0] == "R") {
+
                         const tableId = field?.type?.split(":")[1];
                         Object.defineProperty(this, key, {
-                            get: refGetter(tableId, record[key]?.slice(1), tokenInfo)
+                            get: refGetter(tableId, record[key][2], tokenInfo)
                         });
+
                     } else if (typeof record[key] === "number") {
                         const tableId = field?.type?.split(":")[1];
                         Object.defineProperty(this, key, {
@@ -520,8 +522,9 @@ function any(o, key, data, tokenInfo, options, rules) {
 function refGetter(tableId, rowId) {
     let ref;
     return async function () {
+
         if (ref) {
-            ref;
+            return ref;
         }
 
         const table = await cache.getTable(tableId);
@@ -532,6 +535,7 @@ function refGetter(tableId, rowId) {
         }
 
         ref = new RecordDrop(row, fields, tokenInfo);
+
         return ref;
     };
 }
