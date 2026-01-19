@@ -25,7 +25,7 @@ grist.ready({
 
 
 // Callback for multiple record updates
-grist.onRecords(async (recs, mappings) => {
+grist.onRecords(throttle(async (recs, mappings) => {
     records = recs;
     if (multiple) {
         if (options.templateTableId === undefined) {
@@ -35,11 +35,11 @@ grist.onRecords(async (recs, mappings) => {
             await render();
         }
     }
-}, { includeColumns: "all", expandRefs: false, keepEncoded: true });
+}, 200), { includeColumns: "all", expandRefs: false, keepEncoded: true });
 
 
 // Callback for single record update
-grist.onRecord(async rec => {
+grist.onRecord(throttle(async rec => {
     record = rec;
     if (!multiple) {
         if (options.templateColumnId === undefined) {
@@ -49,7 +49,7 @@ grist.onRecord(async rec => {
             await render();
         }
     }
-}, { includeColumns: "normal", expandRefs: false, keepEncoded: true });
+}, 200), { includeColumns: "normal", expandRefs: false, keepEncoded: true });
 
 
 // Callback for options update
@@ -560,4 +560,15 @@ function refListGetter(tableId, ids, tokenInfo) {
 
         return refList;
     }
+}
+
+function throttle(fn, delay) {
+    let lastTime = 0;
+    return function (...args) {
+        const now = Date.now();
+        if (now - lastTime >= delay) {
+            fn.apply(this, args);
+            lastTime = now;
+        }
+    };
 }
