@@ -73,7 +73,7 @@ async function render() {
     const templateFromOther = options.templateFromOther || multiple;
 
     document.getElementById("print").style.display = "block";
-    cache = new CachedTables();
+    cache = cache ? cache : new CachedTables();
     tokenInfo = tokenInfo || await grist.docApi.getAccessToken({ readOnly: true });
 
     const tableId = await grist.selectedTable.getTableId();
@@ -110,7 +110,7 @@ async function render() {
     previousHtml = html;
 
     clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(render, 3000);
+    refreshTimer = setTimeout(() => { cache = null; render() }, 3000);
 }
 
 
