@@ -147,9 +147,12 @@ async function openConfig(opts) {
     if (!multipleConfig) {
         out += `<fieldset><legend>Get template from:</legend>
             <p>
-                <span><input type="radio" id="tplcol" name="tplsrc" onclick="setOther(false)" ${other ? "" : "checked"} /><label for="tplcol">Column</label></span>
-                <span><input type="radio" id="tpltbl" name="tplsrc" onclick="setOther(true)" ${other ? "checked" : ""} /><label for="tpltbl">Other table</label></span>
+                <span><input type="radio" id="tplcol" name="tplsrc" ${other ? "" : "checked"} /><label for="tplcol">Column</label></span>
+                <span><input type="radio" id="tpltbl" name="tplsrc" ${other ? "checked" : ""} /><label for="tpltbl">Other table</label></span>
             </p></fieldset>`;
+
+        handlers["tplcol"] = ["click", () => setOther(opts, false)];
+        handlers["tplsrc"] = ["click", () => setOther(opts, true)];
     }
 
     out += `<fieldset><legend>Template</legend>`;
@@ -229,8 +232,8 @@ function setMultiple(bool) {
     openConfig({ multiple: bool });
 }
 
-function setOther(bool) {
-    openConfig({ templateFromOther: bool });
+function setOther(opts, bool) {
+    openConfig({ ...opts, templateFromOther: bool });
 }
 
 // Function called when selecting a template column
