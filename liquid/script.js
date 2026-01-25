@@ -152,7 +152,7 @@ async function openConfig(opts) {
             </p></fieldset>`;
 
         handlers["tplcol"] = ["click", () => setOther(opts, false)];
-        handlers["tplsrc"] = ["click", () => setOther(opts, true)];
+        handlers["tpltbl"] = ["click", () => setOther(opts, true)];
     }
 
     out += `<fieldset><legend>Template</legend>`;
