@@ -17,6 +17,7 @@ const engine = new liquidjs.Liquid({
 let multiple = false;
 
 
+
 // Initialize Grist with necessary callbacks
 grist.ready({
     onEditOptions: openConfig,
@@ -56,8 +57,9 @@ grist.onRecord(throttle(async rec => {
 grist.onOptions(async opts => {
     options = opts || {};
     multiple = options.multiple;
-    if (!multiple && options.templateColumnId === undefined
-        || multiple && options.templateTableId === undefined
+
+    if ((multiple || options.templateFromOther) && options.templateTableId === undefined || !(multiple || options.templateFromOther) && options.templateColumnId === undefined
+
     ) {
         cache = new CachedTables();
         await openConfig();
@@ -68,14 +70,16 @@ grist.onOptions(async opts => {
 
 // Function to render the template in the HTML container
 async function render() {
+    const templateFromOther = options.templateFromOther || multiple;
+
     document.getElementById("print").style.display = "block";
     cache = new CachedTables();
     tokenInfo = tokenInfo || await grist.docApi.getAccessToken({ readOnly: true });
 
     const tableId = await grist.selectedTable.getTableId();
     const fields = await cache.getFields(tableId);
-    const colId = multiple ? null : fields.find(t => t.id == options.templateColumnId).colId;
-    const newSrc = multiple ?
+    const colId = templateFromOther ? null : fields.find(t => t.id == options.templateColumnId).colId;
+    const newSrc = templateFromOther ?
         await getRefTemplate(options.templateTableId, options.templateId, options.templateColumnId)
         : (Array.isArray(record[colId]) && record[colId][0] === "R"
             ? await getRefTemplate(record[colId][1], record[colId][2], options.templateRefColumnId)
@@ -116,17 +120,20 @@ async function openConfig(opts) {
     previousHtml = "";
     let colId = opts ? opts.colId : options?.templateColumnId;
     let labelId = opts ? opts.labelId : options?.templateLabelColumnId;
+    let other = opts ? opts.templateFromOther : options?.templateFromOther;
     document.getElementById("print").style.display = "none";
     const container = document.getElementById("container");
     const multipleConfig = opts && "multiple" in opts ? opts.multiple : multiple;
+    const otherTable = other || multipleConfig;
 
 
-    const tableId = multipleConfig
+    const tableId = otherTable
         ? opts?.tid || options.templateTableId
         : await grist.selectedTable.getTableId();
 
-    const tables = multipleConfig ? await cache.getTables() : null;
+    const tables = otherTable ? await cache.getTables() : null;
 
+    const handlers = {};
     let out = `<div style="padding: 8px;"><fieldset><legend>Mode :</legend>
   <div>
     <input type="radio" id="single" name="mode" value="single" onclick="setMultiple(false)" ${multipleConfig ? "" : "checked"} />
@@ -135,30 +142,45 @@ async function openConfig(opts) {
     <input type="radio" id="multiple" name="mode" value="multiple" onclick="setMultiple(true)" ${multipleConfig ? "checked" : ""}/>
     <label for="multiple">Record list</label>
   </div>
-</fieldset><fieldset><legend>Template</legend>`;
+</fieldset>`
+
+    if (!multipleConfig) {
+        out += `<fieldset><legend>Get template from:</legend>
+            <p>
+                <span><input type="radio" id="tplcol" name="tplsrc" onclick="setOther(false)" ${other ? "" : "checked"} /><label for="tplcol">Column</label></span>
+                <span><input type="radio" id="tpltbl" name="tplsrc" onclick="setOther(true)" ${other ? "checked" : ""} /><label for="tpltbl">Other table</label></span>
+            </p></fieldset>`;
+    }
+
+    out += `<fieldset><legend>Template</legend>`;
     let cond = null;
 
-    if (multipleConfig) {
-        out += `<p>Table: <select id="template-table-id" onchange="selectTemplatesTable()"><option value=""></option>` +
+    if (otherTable) {
+        out += `<p>Table: <select id="template-table-id"><option value=""></option>` +
             Object.values(tables).map(table => `<option value="${table.id}" ${table.id === tableId ? "selected" : ""}>${table.tableId}</option>`).join("<br/>") +
             `</select></p>`;
+        handlers["template-table-id"] = ["change", () => selectTemplatesTable(opts)];
+
     }
 
 
-    if (!multipleConfig || tableId) {
-        const fields = await cache.getFields(multipleConfig ? tables[tableId].tableId : tableId);
+    if (!otherTable || tableId) {
+        const fields = await cache.getFields(otherTable ? tables[tableId].tableId : tableId);
         const field = colId ? fields.find(t => t.id === colId) : undefined;
 
 
-
-        out += `<p>Column: <select id="template-col-id" onchange="selectTemplateColumn(${multipleConfig}, ${multipleConfig ? tableId : null})"><option value=""></option>` +
-            fields.filter(f => f.type === "Text" || (multipleConfig ? false : f.type.startsWith("Ref:"))).map(col => `<option value="${col.id}" ${col.id === colId ? "selected" : ""}>${col.label}</option>`).join("<br/>") +
+        out += `<p>Column: <select id="template-col-id"><option value=""></option>` +
+            fields.filter(f => f.type === "Text" || (otherTable ? false : f.type.startsWith("Ref:"))).map(col => `<option value="${col.id}" ${col.id === colId ? "selected" : ""}>${col.label}</option>`).join("<br/>") +
             `</select><p>`;
 
-        if (multipleConfig) {
-            out += `<p>Label: <select id="template-label-id" onchange="selectLabelColumn(${tableId}, ${colId})"><option value=""></option>` +
+        handlers["template-col-id"] = ["change", () => selectTemplateColumn(opts, otherTable ? tableId : null)];
+
+        if (otherTable) {
+            out += `<p>Label: <select id="template-label-id"><option value=""></option>` +
                 fields.filter(f => f.type === "Text" && f.id !== colId).map(col => `<option value="${col.id}" ${col.id === labelId ? "selected" : ""}>${col.label}</option>`).join("<br/>") +
                 `</select><p>`
+            handlers["template-label-id"] = ["change", () => selectLabelColumn(opts, tableId, colId)];
+
         } else {
             const fieldRef = field?.type.startsWith("Ref") ? field.type.slice(4) : null;
             const refFields = fieldRef ? await cache.getFields(fieldRef) : null;
@@ -169,20 +191,22 @@ async function openConfig(opts) {
                 : "")
             cond = {
                 multiple: multipleConfig,
+                templateFromOther: other,
                 templateTableId: tableId,
                 templateColumnId: colId,
                 isRef: refFields ? true : false
             }
         }
 
-        if (multipleConfig && colId && labelId) {
+        if (otherTable && colId && labelId) {
             const records = await cache.getTable(tables[tableId].tableId);
             const field = fields.find(f => f.id === labelId).colId;
-            out += `<p>Template: <select id="template-id" onchange=""><option value=""></option>` +
+            out += `<p>Template: <select id="template-id"><option value=""></option>` +
                 records.map(rec => `<option value="${rec.id}" ${rec.id === options?.templateId ? "selected" : ""}>${rec[field]}</option>`).join("<br/>") +
                 `</select></p>`;
             cond = {
                 multiple: multipleConfig,
+                templateFromOther: other,
                 templateTableId: tableId,
                 templateColumnId: colId,
                 templateLabelColumnId: labelId
@@ -195,6 +219,9 @@ async function openConfig(opts) {
     out += `</fieldset><p><button onclick="openConfig()">Revert</button> ` +
         `<button id="config-ok" ${cond ? "" : "disabled"}>Ok</button></p></div>`;
     container.innerHTML = out;
+    for (const [id, [event, handler]] of Object.entries(handlers)) {
+        document.getElementById(id).addEventListener(event, handler);
+    }
     document.getElementById("config-ok").onclick = () => validateTemplate(cond);
 }
 
@@ -202,22 +229,27 @@ function setMultiple(bool) {
     openConfig({ multiple: bool });
 }
 
+function setOther(bool) {
+    openConfig({ templateFromOther: bool });
+}
+
 // Function called when selecting a template column
-function selectTemplatesTable() {
-    openConfig({ multiple: true, tid: parseInt(document.getElementById("template-table-id").value) });
+function selectTemplatesTable(opts) {
+    openConfig({ ...opts, tid: parseInt(document.getElementById("template-table-id").value) });
 }
 // Function called when selecting a template column
-function selectTemplateColumn(multiple, tid) {
-    openConfig({ multiple, tid, colId: parseInt(document.getElementById("template-col-id").value) });
+function selectTemplateColumn(opts, tid) {
+    openConfig({ ...opts, tid, colId: parseInt(document.getElementById("template-col-id").value) });
 }
 // Function called when selecting a label column
-function selectLabelColumn(tid, colId) {
-    openConfig({ multiple: true, tid, colId, labelId: parseInt(document.getElementById("template-label-id").value) });
+function selectLabelColumn(opts, tid, colId) {
+    openConfig({ ...opts, tid, colId, labelId: parseInt(document.getElementById("template-label-id").value) });
 }
 
 // Function to validate and apply template options
 function validateTemplate(opts) {
-    if (opts.multiple) {
+    console.log("Options:", opts);
+    if (opts.multiple || opts.templateFromOther) {
         const templateId = parseInt(document.getElementById("template-id")?.value);
         if (!templateId) {
             alert("Please select a template.");
@@ -228,13 +260,14 @@ function validateTemplate(opts) {
             || options.templateLabelColumnId !== opts.templateLabelColumnId
             || options.templateId !== templateId) {
             grist.setOptions({
-                multiple: true,
+                multiple: opts.multiple,
+                templateFromOther: opts.templateFromOther,
                 templateTableId: opts.templateTableId,
                 templateColumnId: opts.templateColumnId,
                 templateLabelColumnId: opts.templateLabelColumnId,
                 templateId: templateId
             });
-            return;
+
 
         }
     } else {
@@ -249,7 +282,6 @@ function validateTemplate(opts) {
                 templateColumnId: opts.templateColumnId,
                 templateRefColumnId: templateRefColumnId
             });
-            return;
         }
     }
 
