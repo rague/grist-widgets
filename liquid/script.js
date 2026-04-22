@@ -79,14 +79,19 @@ async function render() {
     const tableId = await grist.selectedTable.getTableId();
     const fields = await cache.getFields(tableId);
     const colId = templateFromOther ? null : fields.find(t => t.id == options.templateColumnId).colId;
-    const newSrc = templateFromOther ?
+    const [newSrc, templateRecord] = templateFromOther ?
         await getRefTemplate(options.templateTableId, options.templateId, options.templateColumnId)
         : (Array.isArray(record[colId]) && record[colId][0] === "R"
             ? await getRefTemplate(record[colId][1], record[colId][2], options.templateRefColumnId)
-            : record[colId]);
+            : [record[colId], null]);
     const data = multiple
         ? new RecordDrop({ records: records.map(rec => new RecordDrop(rec, fields, tokenInfo)) }, fields, tokenInfo)
         : new RecordDrop(record, fields, tokenInfo);
+
+    if(templateRecord) {
+        data._template = new RecordDrop(templateRecord, await cache.getFields( templateFromOther ? options.templateTableId : record[colId][1]), tokenInfo)
+    }
+    
 
     if (src !== newSrc) {
         src = newSrc;
@@ -296,8 +301,8 @@ async function getRefTemplate(tableId, rowId, templateRefColumnId) {
     const fields = await cache.getFields(tableId);
     const colId = fields.find(t => t.id === templateRefColumnId).colId;
     const table = await cache.getTable(tableId, true);
-    const src = table.find(r => r.id === rowId)[colId];
-    return src;
+    const template = table.find(r => r.id === rowId);
+    return [template[colId], template];
 }
 
 
