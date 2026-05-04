@@ -21,6 +21,13 @@ const settings = document.getElementById("settings");
 const widgetWindow = container.contentWindow;
 
 
+let lastScrollY;
+let lastScrollX;
+container.addEventListener("load", () => {
+    widgetWindow.scrollTo(lastScrollX, lastScrollY);
+});
+
+
 grist.ready({
     onEditOptions: openConfig,
     requiredAccess: 'full',
@@ -125,11 +132,15 @@ async function render() {
             : "<p>Waiting for data or template</p>");
 
     if (html !== previousHtml) {
+        lastScrollY = widgetWindow.scrollY;
+        lastScrollX = widgetWindow.scrollX;
+
         if (currentURL) { URL.revokeObjectURL(currentURL); }
         currentURL = URL.createObjectURL(new Blob([cleanUpHtml(html)], { type: "text/html" }));
         container.src = currentURL;
         container.style.display = "";
         settings.innerHTML = "";
+
     }
 
     previousHtml = html;
