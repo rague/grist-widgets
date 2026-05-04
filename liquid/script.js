@@ -15,15 +15,31 @@ const engine = new liquidjs.Liquid({
     jsTruthy: true,
 }); // Liquid engine
 let multiple = false;
+let currentURL = null;
+const container = document.getElementById("container");
+const settings = document.getElementById("settings");
+const widgetWindow = container.contentWindow;
 
 
-
-// Initialize Grist with necessary callbacks
 grist.ready({
     onEditOptions: openConfig,
-    requiredAccess: 'full', // requires full access to read table data
+    requiredAccess: 'full',
+    allowSelectBy: true
 });
 
+window.addEventListener('message', async (event) => {
+    // Security: Validate origin
+    if (event.source !== widgetWindow) return;
+    switch (event.data.command) {
+        case "select":
+            grist.setCursorPos({ rowId: event.data.rowId });
+            break;
+        case "openCard":
+            await grist.setCursorPos({ rowId: event.data.rowId });
+            grist.commandApi.run('viewAsCard');
+            break;
+    }
+});
 
 // Callback for multiple record updates
 grist.onRecords(throttle(async (recs, mappings) => {
@@ -88,10 +104,10 @@ async function render() {
         ? new RecordDrop({ records: records.map(rec => new RecordDrop(rec, fields, tokenInfo)) }, fields, tokenInfo)
         : new RecordDrop(record, fields, tokenInfo);
 
-    if(templateRecord) {
-        data._template = new RecordDrop(templateRecord, await cache.getFields( templateFromOther ? options.templateTableId : record[colId][1]), tokenInfo)
+    if (templateRecord) {
+        data._template = new RecordDrop(templateRecord, await cache.getFields(templateFromOther ? options.templateTableId : record[colId][1]), tokenInfo)
     }
-    
+
 
     if (src !== newSrc) {
         src = newSrc;
@@ -102,14 +118,18 @@ async function render() {
         }
     }
 
-    const container = document.getElementById("container");
+
     const html = template?.ok
         ? await engine.render(template.ok, data)
         : (template?.error ? `<p style="color:red;">Template Error: ${template.error}</p>`
             : "<p>Waiting for data or template</p>");
 
     if (html !== previousHtml) {
-        container.innerHTML = html;
+        if (currentURL) { URL.revokeObjectURL(currentURL); }
+        currentURL = URL.createObjectURL(new Blob([cleanUpHtml(html)], { type: "text/html" }));
+        container.src = currentURL;
+        container.style.display = "";
+        settings.innerHTML = "";
     }
 
     previousHtml = html;
@@ -118,28 +138,35 @@ async function render() {
     refreshTimer = setTimeout(() => { cache = null; render() }, 3000);
 }
 
+function cleanUpHtml(input) {
+    const body = (s) => /^<body[\s>]/i.test(s) ? s : `<body>${s}</body>`;
+    const head = (s) => /^<head[\s>]/i.test(s) ? s : `<head><meta charset="utf-8"></head>${body(s)}`;
+    const html = (s) => /^<html[\s>]/i.test(s) ? s : `<html>${head(s)}</html>`;
+    const doctype = (s) => /^<!doctype/i.test(s) ? s : `<!doctype html>\n${html(s)}`;
+    return doctype(input.trimStart());
+}
 
 // Function to open the widget configuration
 async function openConfig(opts) {
+
     clearTimeout(refreshTimer);
     previousHtml = "";
-    let colId = opts ? opts.colId : options?.templateColumnId;
-    let labelId = opts ? opts.labelId : options?.templateLabelColumnId;
-    let other = opts ? opts.templateFromOther : options?.templateFromOther;
+    let colId = opts && "colId" in opts ? opts.colId : options?.templateColumnId;
+    let labelId = opts && "labelId" in opts ? opts.labelId : options?.templateLabelColumnId;
+    let other = opts && "templateFromOther" in opts ? opts.templateFromOther : options?.templateFromOther;
     document.getElementById("print").style.display = "none";
-    const container = document.getElementById("container");
     const multipleConfig = opts && "multiple" in opts ? opts.multiple : multiple;
     const otherTable = other || multipleConfig;
 
 
-    const tableId = otherTable
-        ? opts?.tid || options.templateTableId
+    const tableId = otherTable ?
+        opts?.tid || options?.templateTableId
         : await grist.selectedTable.getTableId();
 
     const tables = otherTable ? await cache.getTables() : null;
 
     const handlers = {};
-    let out = `<div style="padding: 8px;"><fieldset><legend>Mode :</legend>
+    let out = `<div style="padding: 8px;"><fieldset><legend>Mode</legend>
   <div>
     <input type="radio" id="single" name="mode" value="single" onclick="setMultiple(false)" ${multipleConfig ? "" : "checked"} />
     <label for="single">Single record</label>
@@ -170,7 +197,6 @@ async function openConfig(opts) {
         handlers["template-table-id"] = ["change", () => selectTemplatesTable(opts)];
 
     }
-
 
     if (!otherTable || tableId) {
         const fields = await cache.getFields(otherTable ? tables[tableId].tableId : tableId);
@@ -220,13 +246,13 @@ async function openConfig(opts) {
                 templateLabelColumnId: labelId
             };
         }
-
-
     }
 
-    out += `</fieldset><p><button onclick="openConfig()">Revert</button> ` +
+    out += `</fieldset>`;
+    out += `<p><button onclick="openConfig()">Revert</button> ` +
         `<button id="config-ok" ${cond ? "" : "disabled"}>Ok</button></p></div>`;
-    container.innerHTML = out;
+    settings.innerHTML = out;
+    container.style.display = "none";
     for (const [id, [event, handler]] of Object.entries(handlers)) {
         document.getElementById(id).addEventListener(event, handler);
     }
@@ -234,7 +260,7 @@ async function openConfig(opts) {
 }
 
 function setMultiple(bool) {
-    openConfig({ multiple: bool });
+    openConfig({ multiple: bool, allowSelectBy: document.getElementById("template-allow-select-by").checked });
 }
 
 function setOther(opts, bool) {
@@ -254,9 +280,9 @@ function selectLabelColumn(opts, tid, colId) {
     openConfig({ ...opts, tid, colId, labelId: parseInt(document.getElementById("template-label-id").value) });
 }
 
+
 // Function to validate and apply template options
 function validateTemplate(opts) {
-    console.log("Options:", opts);
     if (opts.multiple || opts.templateFromOther) {
         const templateId = parseInt(document.getElementById("template-id")?.value);
         if (!templateId) {
@@ -273,7 +299,7 @@ function validateTemplate(opts) {
                 templateTableId: opts.templateTableId,
                 templateColumnId: opts.templateColumnId,
                 templateLabelColumnId: opts.templateLabelColumnId,
-                templateId: templateId
+                templateId: templateId,
             });
 
 
@@ -284,11 +310,12 @@ function validateTemplate(opts) {
             alert("Please select a column.");
             return;
         }
-        if (options.templateColumnId !== opts.templateColumnId || options.templateRefColumnId !== templateRefColumnId) {
+        if (options.templateColumnId !== opts.templateColumnId
+            || options.templateRefColumnId !== templateRefColumnId) {
             grist.setOptions({
                 multiple: false,
                 templateColumnId: opts.templateColumnId,
-                templateRefColumnId: templateRefColumnId
+                templateRefColumnId: templateRefColumnId,
             });
         }
     }
@@ -304,8 +331,6 @@ async function getRefTemplate(tableId, rowId, templateRefColumnId) {
     const template = table.find(r => r.id === rowId);
     return [template[colId], template];
 }
-
-
 
 // Class to cache Grist tables and fields
 class CachedTables {
@@ -611,4 +636,8 @@ function throttle(fn, delay) {
             lastTime = now;
         }
     };
+}
+
+function print() {
+    container.contentWindow.print();
 }

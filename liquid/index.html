@@ -17,6 +17,12 @@
             }
         }
 
+        #container {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
         #print {
             visibility: hidden;
             position: fixed;
@@ -31,8 +37,9 @@
 </head>
 
 <body style="padding:0; margin:0;">
-    <button id="print" onclick="window.print()">Print</button>
-    <div id="container"></div>
+    <button id="print" onclick="print()">Print</button>
+    <div id="settings"></div>
+    <iframe id="container"></iframe>
     <script src="./script.js"></script>
 </body>
 
