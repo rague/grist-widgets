@@ -11,7 +11,7 @@ let cache; // Cache for tables and fields
 let refreshTimer; // Timer for refresh at regular interval
 let tokenInfo; // Access token
 const engine = new liquidjs.Liquid({
-    outputEscape: "escape",
+    // outputEscape: "escape",
     jsTruthy: true,
 }); // Liquid engine
 let multiple = false;
@@ -26,6 +26,9 @@ let lastScrollX;
 container.addEventListener("load", () => {
     widgetWindow.scrollTo(lastScrollX, lastScrollY);
 });
+
+
+engine.registerFilter('markdown', v => DOMPurify.sanitize(marked.parse(v.value)));
 
 
 grist.ready({
