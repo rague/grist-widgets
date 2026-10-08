@@ -274,7 +274,7 @@ async function openConfig(opts) {
 }
 
 function setMultiple(bool) {
-    openConfig({ multiple: bool, allowSelectBy: document.getElementById("template-allow-select-by").checked });
+    openConfig({ multiple: bool });
 }
 
 function setOther(opts, bool) {
