@@ -94,8 +94,23 @@ grist.onOptions(async opts => {
     }
 })
 
-// Function to render the template in the HTML container
+// Function to render the template in the HTML container.
+// Serialized: an older async render can no longer overwrite a newer one,
+// and a render requested during an in-flight render is re-queued.
+let renderPending = false;
+let renderQueued = false;
 async function render() {
+    if (renderPending) { renderQueued = true; return; }
+    renderPending = true;
+    try {
+        await doRender();
+    } finally {
+        renderPending = false;
+        if (renderQueued) { renderQueued = false; render(); }
+    }
+}
+
+async function doRender() {
     const templateFromOther = options.templateFromOther || multiple;
 
     document.getElementById("print").style.display = "block";
@@ -643,11 +658,32 @@ function refListGetter(tableId, ids, tokenInfo) {
 
 function throttle(fn, delay) {
     let lastTime = 0;
+    let timer = null;
+    let pendingArgs = null;
+    let pendingThis = null;
     return function (...args) {
         const now = Date.now();
-        if (now - lastTime >= delay) {
-            fn.apply(this, args);
+        const remaining = delay - (now - lastTime);
+        // Always keep the latest call so no update is ever lost
+        pendingThis = this;
+        pendingArgs = args;
+        if (remaining <= 0) {
+            // Leading edge: run immediately
+            if (timer) { clearTimeout(timer); timer = null; }
             lastTime = now;
+            fn.apply(pendingThis, pendingArgs);
+            pendingArgs = null;
+            pendingThis = null;
+        } else if (!timer) {
+            // Trailing edge: schedule the last coalesced call so the final
+            // state is always rendered, even after a burst of events
+            timer = setTimeout(() => {
+                timer = null;
+                lastTime = Date.now();
+                fn.apply(pendingThis, pendingArgs);
+                pendingArgs = null;
+                pendingThis = null;
+            }, remaining);
         }
     };
 }
