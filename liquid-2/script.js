@@ -683,5 +683,34 @@ function throttle(fn, delay) {
 }
 
 function print() {
-    container.contentWindow.print();
+    // If the rendered html provides a <title>, use the grist-cw-html-to-pdf
+    // technique: render it in a new window before printing. Browsers use the
+    // document title as the default file name when saving as PDF, which does
+    // not work when printing directly from an iframe. Otherwise, print the
+    // iframe directly, as before.
+    const title = container.contentDocument?.querySelector("title")?.textContent?.trim();
+    if (!title) {
+        container.contentWindow.print();
+        return;
+    }
+
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+        // Popup blocked: fall back to printing the iframe
+        console.warn("Print popup blocked by the browser: the <title> tag will not be used as the PDF file name.");
+        container.contentWindow.print();
+        return;
+    }
+
+    // Load the rendered html in the new window through a blob url, exactly
+    // like doRender does for the iframe (no document.write), then auto-print
+    // once loaded (same technique as grist-cw-html-to-pdf), so the print
+    // dialog proposes the title as the default PDF file name. window.print()
+    // being blocking, the blob url is revoked right after the dialog closes.
+    const autoPrint = `<script>window.addEventListener("load", function () { setTimeout(function () { window.print(); URL.revokeObjectURL(location.href); window.close();}, 250); });<\/script>`;
+    const html = cleanUpHtml(previousHtml);
+    const fullHtml = /<\/body>/i.test(html)
+        ? html.replace(/<\/body>/i, `${autoPrint}</body>`)
+        : html + autoPrint;
+    printWindow.location.href = URL.createObjectURL(new Blob([fullHtml], { type: "text/html" }));
 }
