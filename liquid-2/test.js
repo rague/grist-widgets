@@ -12,7 +12,7 @@
 //   réel et seulement hors interaction (REFRESH_IDLE) ;
 // - index O(1) de CachedTables (getRow/getRowMap) et refreshData ;
 // - garde des règles conditionnelles inconnues dans RecordDrop ;
-// - cache du token d'accès (getAccessToken une seule fois).
+// - token d'accès: getAccessToken réappelé à l'expiration rapportée (ttlMsecs).
 //
 // Durées: calées sur les constantes du widget (debounce 150 ms, timer de
 // refresh 3 s, REFRESH_IDLE 5 s) — ne pas réduire les attentes ci-dessous.
@@ -85,6 +85,9 @@ globalThis.DOMPurify = { sanitize: v => v };
 // ---------- Mock Grist (schéma Factures → Ref/RefList → Clients) ----------
 const handlers = {};
 let tokenCalls = 0;
+// Durée de vie volontairement courte (400 ms): la marge de 10% du widget
+// met le token en expiration au bout de ~360 ms, ce qui exerce le refresh.
+let tokenTtlMsecs = 400;
 const fetchCount = {};
 
 const tablesMeta = {
@@ -127,7 +130,10 @@ globalThis.grist = {
     commandApi: { run() {} },
     selectedTable: { getTableId: async () => "Factures" },
     docApi: {
-        async getAccessToken() { tokenCalls++; return { baseUrl: "http://mock", token: "T" }; },
+        async getAccessToken() {
+            tokenCalls++;
+            return { baseUrl: "http://mock", token: "T" + tokenCalls, ttlMsecs: tokenTtlMsecs };
+        },
         async fetchTable(tid) {
             fetchCount[tid] = (fetchCount[tid] || 0) + 1;
             if (tid === "Factures") return columnar(factures);
@@ -199,6 +205,13 @@ function rec(name, tmpl) {
     eq(fetchCount["_grist_Tables"] || 0, 1, "_grist_Tables fetché une seule fois (métadonnées en cache)");
     eq(fetchCount["_grist_Tables_column"] || 0, 2, "_grist_Tables_column fetché 2 fois (Factures + Clients)");
     eq(fetchCount["Factures"] || 0, 0, "données de Factures jamais fetchées (template inline)");
+
+    console.log("— token: refresh automatique à l'expiration rapportée (ttlMsecs)");
+    ok(tokenCalls >= 2, "token rafraîchi au moins une fois pendant le scénario (ttl 400 ms)");
+    const beforeToken = tokenCalls;
+    handlers.record(rec("Token"));
+    await sleep(200);
+    ok(tokenCalls > beforeToken, `getAccessToken réappelé après expiration (${beforeToken} → ${tokenCalls})`);
 
     console.log("— CachedTables: getRow/getRowMap (index O(1)) + refreshData");
     const CT = globalThis.__T.CachedTables;

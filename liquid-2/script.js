@@ -27,10 +27,11 @@ let template = undefined; // Compiled template or error
 let cache; // Cache for tables and fields
 let refreshTimer; // Timer for the periodic background cache refresh
 let refreshingCache = false; // Guards against overlapping background refreshes
-let tokenInfo; // Access token
-let tokenTime = 0; // Moment the current access token was obtained
-// Access tokens expire after ~5 minutes server-side: refresh before expiry.
-const TOKEN_TTL = 4 * 60 * 1000;
+let tokenInfo; // AccessTokenResult (token, baseUrl, ttlMsecs)
+let tokenExpiresAt = 0; // Moment the current access token stops being usable
+// Fallback when the server does not report a lifetime (ttlMsecs): tokens
+// expire after ~5 minutes server-side, refresh earlier than that.
+const TOKEN_TTL_FALLBACK = 4 * 60 * 1000;
 let lastActivity = 0; // Moment of the last received record event
 // Skip the background cache refresh while record events arrived recently (the
 // user is actively changing the selection): never slow down interactions.
@@ -140,12 +141,19 @@ async function render() {
     }
 }
 
-// Returns a valid access token, transparently refreshing it before the
-// server-side expiry (previously the first token was kept forever).
+// Returns a valid AccessTokenResult (token, baseUrl, ttlMsecs), transparently
+// refreshing it before the expiry reported by the server in ttlMsecs (cf
+// AccessTokenResult docs; previously the first token was kept forever). 10% of
+// the reported lifetime are subtracted to absorb clock skew; a fallback
+// applies when ttlMsecs is missing (older Grist versions).
 async function getToken() {
-    if (!tokenInfo || Date.now() - tokenTime > TOKEN_TTL) {
-        tokenInfo = await grist.docApi.getAccessToken({ readOnly: true });
-        tokenTime = Date.now();
+    if (!tokenInfo || Date.now() >= tokenExpiresAt) {
+        const result = await grist.docApi.getAccessToken({ readOnly: true });
+        const ttl = typeof result?.ttlMsecs === "number" && result.ttlMsecs > 0
+            ? result.ttlMsecs
+            : TOKEN_TTL_FALLBACK;
+        tokenInfo = result;
+        tokenExpiresAt = Date.now() + Math.floor(ttl * 0.9);
     }
     return tokenInfo;
 }
