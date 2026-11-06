@@ -8,6 +8,15 @@
 //   _.<colId>.choiceOptions[<value>].styles     per-choice styles
 //   _.<colId>.conditionalStyles                 styles of rules matching this record
 // BREAKING vs V1: <field>.value and <field>._ are gone - use _.<colId>... instead.
+//
+// Performance notes:
+// - record callbacks are debounced with an immediate leading call: a burst of
+//   selection changes renders once right away, then once when the burst settles
+//   ("latest wins"), instead of queuing one render per 200ms tick;
+// - rendering writes the iframe document in place (no blob URL navigation);
+// - cached table data is refreshed in the background every 3s, OUTSIDE the
+//   serialized render pipeline, and only triggers a re-render when some data
+//   actually changed (schema metadata stays cached).
 
 let options = null; // Widget configuration options
 let record = null; // Received record
@@ -16,14 +25,21 @@ let src = ""; // Liquid template source
 let previousHtml = ""; // Previous rendered html
 let template = undefined; // Compiled template or error
 let cache; // Cache for tables and fields
-let refreshTimer; // Timer for refresh at regular interval
+let refreshTimer; // Timer for the periodic background cache refresh
+let refreshingCache = false; // Guards against overlapping background refreshes
 let tokenInfo; // Access token
+let tokenTime = 0; // Moment the current access token was obtained
+// Access tokens expire after ~5 minutes server-side: refresh before expiry.
+const TOKEN_TTL = 4 * 60 * 1000;
+let lastActivity = 0; // Moment of the last received record event
+// Skip the background cache refresh while record events arrived recently (the
+// user is actively changing the selection): never slow down interactions.
+const REFRESH_IDLE = 5000;
 const engine = new liquidjs.Liquid({
     // outputEscape: "escape",
     jsTruthy: true,
 }); // Liquid engine
 let multiple = false;
-let currentURL = null;
 const container = document.getElementById("container");
 const settings = document.getElementById("settings");
 const widgetWindow = container.contentWindow;
@@ -59,8 +75,13 @@ window.addEventListener('message', async (event) => {
     }
 });
 
-// Callback for multiple record updates
-grist.onRecords(throttle(async (recs, mappings) => {
+// Callback for multiple record updates.
+// Debounced with an immediate leading call (see debounce): the first event
+// renders right away and a rapid burst of updates is coalesced ("latest wins")
+// into a single trailing render, so changing the selection quickly no longer
+// piles up a queue of serialized renders.
+grist.onRecords(debounce(async (recs, mappings) => {
+    lastActivity = Date.now();
     records = recs;
     if (multiple) {
         if (options.templateTableId === undefined) {
@@ -70,11 +91,12 @@ grist.onRecords(throttle(async (recs, mappings) => {
             await render();
         }
     }
-}, 200), { includeColumns: "all", expandRefs: false, keepEncoded: true });
+}, 150), { includeColumns: "all", expandRefs: false, keepEncoded: true });
 
 
-// Callback for single record update
-grist.onRecord(throttle(async rec => {
+// Callback for single record update (same debouncing as onRecords)
+grist.onRecord(debounce(async rec => {
+    lastActivity = Date.now();
     record = rec;
     if (!multiple) {
         if (options.templateColumnId === undefined) {
@@ -84,7 +106,7 @@ grist.onRecord(throttle(async rec => {
             await render();
         }
     }
-}, 200), { includeColumns: "normal", expandRefs: false, keepEncoded: true });
+}, 150), { includeColumns: "normal", expandRefs: false, keepEncoded: true });
 
 
 // Callback for options update
@@ -118,12 +140,22 @@ async function render() {
     }
 }
 
+// Returns a valid access token, transparently refreshing it before the
+// server-side expiry (previously the first token was kept forever).
+async function getToken() {
+    if (!tokenInfo || Date.now() - tokenTime > TOKEN_TTL) {
+        tokenInfo = await grist.docApi.getAccessToken({ readOnly: true });
+        tokenTime = Date.now();
+    }
+    return tokenInfo;
+}
+
 async function doRender() {
     const templateFromOther = options.templateFromOther || multiple;
 
     document.getElementById("print").style.display = "block";
     cache = cache ? cache : new CachedTables();
-    tokenInfo = tokenInfo || await grist.docApi.getAccessToken({ readOnly: true });
+    await getToken(); // Cached, transparently refreshed before server-side expiry
 
     const tableId = await grist.selectedTable.getTableId();
     const fields = await cache.getFields(tableId);
@@ -161,18 +193,54 @@ async function doRender() {
         lastScrollY = widgetWindow.scrollY;
         lastScrollX = widgetWindow.scrollX;
 
-        if (currentURL) { URL.revokeObjectURL(currentURL); }
-        currentURL = URL.createObjectURL(new Blob([cleanUpHtml(html)], { type: "text/html" }));
-        container.src = currentURL;
+        // Write the new document in place instead of navigating the iframe to a
+        // new blob URL: same parsing and script semantics (same origin), but no
+        // navigation, which is much cheaper when updates arrive in bursts. The
+        // scroll is restored right away; the "load" handler also covers browsers
+        // that fire a load event after write/close.
+        const doc = container.contentDocument;
+        doc.open();
+        doc.write(cleanUpHtml(html));
+        doc.close();
+        widgetWindow.scrollTo(lastScrollX, lastScrollY);
+
         container.style.display = "";
         settings.innerHTML = "";
-
     }
 
     previousHtml = html;
 
+    scheduleRefresh();
+}
+
+// Re-arms the periodic background refresh of cached table data.
+function scheduleRefresh() {
     clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(() => { cache = null; render() }, 3000);
+    refreshTimer = setTimeout(refreshCache, 3000);
+}
+
+// Periodic refresh of the cached data of the tables used by the template
+// (referenced tables, template table). Deliberately kept OUT of the serialized
+// render() pipeline so it can never delay a selection-driven render:
+// - skipped while a render is pending/queued or the user is actively selecting;
+// - only table data is refreshed, schema metadata stays cached;
+// - updated rows are swapped into the cache (no full cache wipe anymore) and a
+//   re-render is triggered only when some data actually changed.
+async function refreshCache() {
+    scheduleRefresh();
+    if (refreshingCache || renderPending || renderQueued || !cache) return;
+    if (Date.now() - lastActivity < REFRESH_IDLE) return;
+    refreshingCache = true;
+    try {
+        if (await cache.refreshData()) {
+            await render();
+        }
+    } catch (e) {
+        // Network or token error: keep the cached data, retry at the next cycle.
+        console.warn("Background cache refresh failed:", e);
+    } finally {
+        refreshingCache = false;
+    }
 }
 
 function cleanUpHtml(input) {
@@ -364,42 +432,60 @@ function validateTemplate(opts) {
 async function getRefTemplate(tableId, rowId, templateRefColumnId) {
     const fields = await cache.getFields(tableId);
     const colId = fields.find(t => t.id === templateRefColumnId).colId;
-    const table = await cache.getTable(tableId, true);
-    const template = table.find(r => r.id === rowId);
-    return [template[colId], template];
+    const template = await cache.getRow(tableId, rowId);
+    return [template ? template[colId] : undefined, template];
 }
 
 // Class to cache Grist tables and fields
 class CachedTables {
-    #tables = null;
-    #types = {};
-    #tablesData = {};
+    #tables = null; // Table metadata (_grist_Tables)
+    #tablesLoad = null; // In-flight tables metadata load
+    #types = {}; // tableId -> fields metadata (_grist_Tables_column)
+    #fieldsLoads = {}; // tableId -> in-flight fields load
+    #tablesData = {}; // tableId -> array of row objects
+    #rawData = {}; // tableId -> raw columnar data, kept for change detection
+    #rowsById = {}; // tableId -> Map(rowId -> row object)
+    #dataLoads = {}; // tableId -> in-flight data load
 
     constructor() {
     }
 
-    // Retrieves the list of tables
+    // Retrieves the list of tables. Concurrent calls share the in-flight load,
+    // so the metadata is fetched exactly once even when accessed in parallel.
     async getTables() {
         if (this.#tables)
             return this.#tables;
-        const raw = await grist.docApi.fetchTable('_grist_Tables');
-        this.#tables = Object.fromEntries(raw.id.map((id, i) =>
-            [id, Object.fromEntries(Object.keys(raw).map(k => [k, raw[k][i]]))]
-        ));
-        return this.#tables;
+        if (!this.#tablesLoad) {
+            this.#tablesLoad = grist.docApi.fetchTable('_grist_Tables')
+                .then(raw => {
+                    this.#tables = Object.fromEntries(raw.id.map((id, i) =>
+                        [id, Object.fromEntries(Object.keys(raw).map(k => [k, raw[k][i]]))]
+                    ));
+                    return this.#tables;
+                })
+                .catch(e => { this.#tablesLoad = null; throw e; });
+        }
+        return this.#tablesLoad;
     }
 
 
-    // Retrieves fields of a table
+    // Retrieves fields of a table. The cache key is the canonical tableId
+    // string, so a numeric table row id and its string tableId share the same
+    // cache entry (and columns are fetched once per table).
     async getFields(tableId) {
+        tableId = await this.#resolveTableId(tableId);
         if (this.#types[tableId])
             return this.#types[tableId];
-
-        let tid = tableId;
-        if (typeof tableId === "string") {
-            const tables = await this.getTables();
-            tid = Object.values(tables).find(table => table.tableId === tableId).id;
+        if (!this.#fieldsLoads[tableId]) {
+            this.#fieldsLoads[tableId] = this.#loadFields(tableId)
+                .catch(e => { delete this.#fieldsLoads[tableId]; throw e; });
         }
+        return this.#fieldsLoads[tableId];
+    }
+
+    async #loadFields(tableId) {
+        const tables = await this.getTables();
+        const tid = Object.values(tables).find(table => table.tableId === tableId).id;
         const columns = await grist.docApi.fetchTable('_grist_Tables_column');
         const fields = Object.keys(columns);
         const colIndexes = columns.parentId.map((id, i) => [id, i]).filter(item => item[0] === tid).map(item => item[1]);
@@ -412,26 +498,100 @@ class CachedTables {
         return this.#types[tableId];
     }
 
-    // Retrieves data of a table
+    // Retrieves data of a table as an array of row objects. Concurrent calls
+    // share the in-flight load.
     async getTable(tableId) {
-        if (typeof tableId === "number") {
-            const tables = await this.getTables();
-            tableId = tables[tableId].tableId;
-        }
+        tableId = await this.#resolveTableId(tableId);
 
         if (this.#tablesData[tableId])
             return this.#tablesData[tableId];
 
+        if (!this.#dataLoads[tableId]) {
+            this.#dataLoads[tableId] = this.#loadTable(tableId)
+                .catch(e => { delete this.#dataLoads[tableId]; throw e; });
+        }
+        return this.#dataLoads[tableId];
+    }
 
-
-        const table = await grist.docApi.fetchTable(tableId);
-        const fields = Object.keys(table);
-        this.#tablesData[tableId] = table.id.map((_, i) => {
-            let row = Object.fromEntries(fields.map(f => [f, table[f][i]]));
-            return row;
-        });
+    async #loadTable(tableId) {
+        const raw = await grist.docApi.fetchTable(tableId);
+        this.#rawData[tableId] = raw;
+        this.#tablesData[tableId] = rowsFromRaw(raw);
+        this.#rowsById[tableId] = new Map(this.#tablesData[tableId].map(row => [row.id, row]));
         return this.#tablesData[tableId];
     }
+
+    // Resolves a numeric table row id (as used in Ref values) to its tableId
+    async #resolveTableId(tableId) {
+        if (typeof tableId === "number") {
+            const tables = await this.getTables();
+            tableId = tables[tableId].tableId;
+        }
+        return tableId;
+    }
+
+    // Retrieves a Map(rowId -> row object) for O(1) lookups by id
+    async getRowMap(tableId) {
+        tableId = await this.#resolveTableId(tableId);
+        await this.getTable(tableId);
+        return this.#rowsById[tableId];
+    }
+
+    // Retrieves a single row by id (O(1) lookup instead of a linear scan)
+    async getRow(tableId, rowId) {
+        const rowMap = await this.getRowMap(tableId);
+        return rowMap.get(rowId) ?? null;
+    }
+
+    // Background refresh of the data of all cached tables. Schema metadata is
+    // intentionally not refreshed (it is stable); each cached table is
+    // re-fetched and swapped in only when its content actually changed.
+    // Returns true if at least one table changed.
+    async refreshData() {
+        let changed = false;
+        for (const tableId of Object.keys(this.#rawData)) {
+            const raw = await grist.docApi.fetchTable(tableId);
+            if (sameRawData(this.#rawData[tableId], raw)) continue;
+            this.#rawData[tableId] = raw;
+            this.#tablesData[tableId] = rowsFromRaw(raw);
+            this.#rowsById[tableId] = new Map(this.#tablesData[tableId].map(row => [row.id, row]));
+            changed = true;
+        }
+        return changed;
+    }
+}
+
+// Converts a raw columnar fetchTable result into an array of row objects
+function rowsFromRaw(table) {
+    const fields = Object.keys(table);
+    return table.id.map((_, i) => {
+        let row = Object.fromEntries(fields.map(f => [f, table[f][i]]));
+        return row;
+    });
+}
+
+// Compares two raw columnar fetchTable results to detect actual changes
+function sameRawData(a, b) {
+    const cols = Object.keys(a);
+    if (cols.length !== Object.keys(b).length) return false;
+    for (const col of cols) {
+        const ca = a[col];
+        const cb = b[col];
+        if (!Array.isArray(ca) || !Array.isArray(cb) || ca.length !== cb.length) return false;
+        for (let i = 0; i < ca.length; i++) {
+            if (!sameRawValue(ca[i], cb[i])) return false;
+        }
+    }
+    return true;
+}
+
+// Values are primitives or nested arrays of primitives (lists)
+function sameRawValue(a, b) {
+    if (a === b) return true;
+    if (Array.isArray(a) && Array.isArray(b)) {
+        return a.length === b.length && a.every((v, i) => sameRawValue(v, b[i]));
+    }
+    return false;
 }
 
 // Utility function to parse JSON safely
@@ -444,10 +604,32 @@ function safeParse(value) {
 }
 
 
+// Indexes a fields array (from CachedTables.getFields) by colId and by rule id.
+// The index is cached per array instance (WeakMap): the same array is shared by
+// all the RecordDrops of a render, so it is built once per table instead of
+// doing an O(C) scan per column of every record (O(C²) per record before).
+const fieldsIndexCache = new WeakMap();
+function fieldsIndex(fields) {
+    if (!fields) return null;
+    let index = fieldsIndexCache.get(fields);
+    if (!index) {
+        index = {
+            byColId: new Map(fields.map(f => [f.colId, f])),
+            byId: new Map(fields.map(f => [f.id, f])),
+        };
+        fieldsIndexCache.set(fields, index);
+    }
+    return index;
+}
+
 // Class to represent a record as a Liquid Drop object
 class RecordDrop extends liquidjs.Drop {
     constructor(record, fields, tokenInfo) {
         super();
+
+        const index = fieldsIndex(fields);
+        const fieldByColId = index?.byColId;
+        const fieldById = index?.byId;
 
         if (fields) {
             this._ = Object.fromEntries(fields.map(f => {
@@ -466,11 +648,11 @@ class RecordDrop extends liquidjs.Drop {
         }
 
         for (const key of Object.keys(record).filter(k => !k.startsWith("gristHelper_"))) {
-            let field = fields?.find(f => f.colId === key);
+            let field = fieldByColId?.get(key);
             let type = field?.type?.split(":")[0];
             let rules;
             if (field) {
-                rules = field.rules?.slice(1).map(cid => fields.find(f => f.id === cid)).map(f => record[f.colId]);
+                rules = field.rules?.slice(1).map(cid => fieldById.get(cid)).map(f => f ? record[f.colId] : null);
                 // V2: styles of the rules matching this record
                 const co = this._[key];
                 if (co) { co.conditionalStyles = co.rulesOptions?.filter((_, idx) => rules?.[idx]).map(r => stylesFromOptions(r)).join(); }
@@ -615,12 +797,11 @@ function refGetter(tableId, rowId) {
             return ref;
         }
 
-        const table = await cache.getTable(tableId);
-        const fields = await cache.getFields(tableId);
-        const row = table.find(r => r.id === rowId);
+        const row = await cache.getRow(tableId, rowId);
         if (!row) {
             return null;
         }
+        const fields = await cache.getFields(tableId);
 
         ref = new RecordDrop(row, fields, tokenInfo);
 
@@ -634,11 +815,11 @@ function refListGetter(tableId, ids, tokenInfo) {
         if (refList) {
             return refList;
         }
-        const table = await cache.getTable(tableId);
+        const rowMap = await cache.getRowMap(tableId);
         const fields = await cache.getFields(tableId);
 
         refList = ids.map(rowId => {
-            let row = table.find(r => r.id === rowId);
+            let row = rowMap.get(rowId);
             if (row) {
                 return new RecordDrop(row, fields, tokenInfo);
             } else {
@@ -650,35 +831,44 @@ function refListGetter(tableId, ids, tokenInfo) {
     }
 }
 
-function throttle(fn, delay) {
-    let lastTime = 0;
+// Debounce with an immediate leading call: the first event of a burst runs
+// right away, then events arriving during the quiet period are coalesced
+// ("latest wins") into a single trailing call once the burst settles. A rapid
+// burst of selection changes therefore triggers one render up front and one
+// final render, instead of one render every `delay` ms. An isolated event
+// triggers only the leading call (nothing new arrived to coalesce).
+function debounce(fn, delay) {
     let timer = null;
     let pendingArgs = null;
     let pendingThis = null;
+    let hasPending = false;
+    let leading = true; // Next isolated event starts a new burst
+    const run = () => {
+        hasPending = false;
+        return fn.apply(pendingThis, pendingArgs)
+            ?.catch(e => console.warn("Record callback failed:", e));
+    };
     return function (...args) {
-        const now = Date.now();
-        const remaining = delay - (now - lastTime);
-        // Always keep the latest call so no update is ever lost
         pendingThis = this;
         pendingArgs = args;
-        if (remaining <= 0) {
+        hasPending = true;
+        if (timer) { clearTimeout(timer); timer = null; }
+        if (leading) {
             // Leading edge: run immediately
-            if (timer) { clearTimeout(timer); timer = null; }
-            lastTime = now;
-            fn.apply(pendingThis, pendingArgs);
-            pendingArgs = null;
-            pendingThis = null;
-        } else if (!timer) {
-            // Trailing edge: schedule the last coalesced call so the final
-            // state is always rendered, even after a burst of events
-            timer = setTimeout(() => {
-                timer = null;
-                lastTime = Date.now();
-                fn.apply(pendingThis, pendingArgs);
+            leading = false;
+            run();
+        }
+        timer = setTimeout(() => {
+            timer = null;
+            leading = true;
+            // Trailing edge: run only if new events were coalesced during the
+            // quiet period (never with empty args after a leading-only burst)
+            if (hasPending) {
+                run();
                 pendingArgs = null;
                 pendingThis = null;
-            }, remaining);
-        }
+            }
+        }, delay);
     };
 }
 
